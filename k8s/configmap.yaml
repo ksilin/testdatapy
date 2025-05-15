@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: testdatapy-config
+  namespace: confluent
+data:
+  config.json: |
+    {
+      "bootstrap.servers": "kafka.confluent.svc.cluster.local:9071",
+      "security.protocol": "SASL_SSL",
+      "sasl.mechanism": "PLAIN",
+      "sasl.username": "kafka",
+      "sasl.password": "kafka-secret",
+      "ssl.ca.location": "/mnt/sslcerts/ca-pem/ca-cert.pem",
+      "rate_per_second": 10,
+      "max_messages": 1000
+    }

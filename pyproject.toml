@@ -1,0 +1,59 @@
+[project]
+name = "testdatapy"
+version = "0.1.0"
+description = "Test data generation tool for Kafka with Faker and CSV support"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "confluent-kafka[avro]>=2.3.0",
+    "faker>=24.4.0",
+    "pandas>=2.2.0",
+    "click>=8.1.7",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.1",
+    "prometheus-client>=0.20.0",
+    "flask>=3.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.1.1",
+    "pytest-asyncio>=0.23.6",
+    "pytest-cov>=5.0.0",
+    "pytest-timeout>=2.3.1",
+    "testcontainers>=4.4.0",
+    "mypy>=1.9.0",
+    "ruff>=0.4.1",
+    "black>=24.3.0",
+    "pre-commit>=3.7.0",
+]
+
+[project.scripts]
+testdatapy = "testdatapy.cli:main"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-v --timeout=30"
+timeout = 30
+markers = [
+    "integration: marks tests as integration tests"
+]

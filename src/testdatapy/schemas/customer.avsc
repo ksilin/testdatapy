@@ -1,0 +1,43 @@
+{
+  "type": "record",
+  "name": "Customer",
+  "namespace": "com.example.avro",
+  "doc": "Avro schema for customer data",
+  "fields": [
+    {
+      "name": "CustomerID",
+      "type": "int",
+      "doc": "Unique identifier for the customer"
+    },
+    {
+      "name": "CustomerFirstName",
+      "type": "string",
+      "doc": "First name of the customer"
+    },
+    {
+      "name": "CustomerLastName",
+      "type": "string",
+      "doc": "Last name of the customer"
+    },
+    {
+      "name": "PostalCode",
+      "type": "int",
+      "doc": "Postal code of the customer's address"
+    },
+    {
+      "name": "Street",
+      "type": "string",
+      "doc": "Street of the customer's address"
+    },
+    {
+      "name": "City",
+      "type": "string",
+      "doc": "City of the customer's address"
+    },
+    {
+      "name": "CountryCode",
+      "type": "string",
+      "doc": "Country code of the customer's address"
+    }
+  ]
+}
