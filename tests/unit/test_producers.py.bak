@@ -30,7 +30,6 @@ class TestKafkaProducer:
     def test_producer_initialization(self):
         """Test producer initialization."""
         producer = MockProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             config={"client.id": "test"},
@@ -41,11 +40,7 @@ class TestKafkaProducer:
 
     def test_produce_message(self):
         """Test producing a message."""
-        producer = MockProducer(
-            auto_create_topic=False,
-            bootstrap_servers="localhost:9092", 
-            topic="test-topic"
-        )
+        producer = MockProducer(bootstrap_servers="localhost:9092", topic="test-topic")
         producer.produce(key="test-key", value={"test": "value"})
 
         assert len(producer.messages) == 1
@@ -54,11 +49,7 @@ class TestKafkaProducer:
 
     def test_context_manager(self):
         """Test producer as context manager."""
-        with MockProducer(
-            auto_create_topic=False,
-            bootstrap_servers="localhost:9092", 
-            topic="test-topic"
-        ) as producer:
+        with MockProducer(bootstrap_servers="localhost:9092", topic="test-topic") as producer:
             producer.produce(key="test", value={"test": "data"})
             assert len(producer.messages) == 1
 
@@ -72,11 +63,7 @@ class TestKafkaProducer:
             callback_called = True
             callback_data = msg
 
-        producer = MockProducer(
-            auto_create_topic=False,
-            bootstrap_servers="localhost:9092", 
-            topic="test-topic"
-        )
+        producer = MockProducer(bootstrap_servers="localhost:9092", topic="test-topic")
         producer.produce(key="test", value={"test": "data"}, on_delivery=delivery_callback)
 
         assert callback_called is True

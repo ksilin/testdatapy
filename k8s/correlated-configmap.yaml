@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: testdatapy-correlated-config
+  namespace: confluent
+data:
+  kafka-config.json: |
+    {
+      "bootstrap.servers": "kafka.confluent.svc.cluster.local:9071",
+      "security.protocol": "SASL_SSL",
+      "sasl.mechanism": "PLAIN",
+      "sasl.username": "kafka",
+      "sasl.password": "kafka-secret",
+      "ssl.ca.location": "/mnt/sslcerts/ca-pem/ca-cert.pem"
+    }
+  correlation-config.yaml: |
+    master_data:
+      customers:
+        kafka_topic: "customers"
+        id_field: "customer_id"
+        source: "generator"
+        generator_config:
+          type: "faker"
+          template:
+            customer_id: "CUST_{{random_int(1000, 9999)}}"
+            name: "{{name}}"
+            email: "{{email}}"
+            phone: "{{phone_number}}"
+            country: "{{country}}"
+          count: 100  # Generate 100 customers
+
+    transactional_data:
+      orders:
+        kafka_topic: "orders"
+        id_field: "order_id"
+        rate_per_second: 10
+        track_recent: true
+        max_messages: 500  # Generate 500 orders then stop
+        relationships:
+          customer_id:
+            references: "customers.customer_id"
+            distribution: "zipf"
+            alpha: 1.5
+        derived_fields:
+          order_id:
+            type: "uuid"
+          order_date:
+            type: "timestamp"
+            format: "iso8601"
+          total_amount:
+            type: "random_float"
+            min: 10.0
+            max: 1000.0
+          status:
+            type: "string"
+            initial_value: "pending"
+            
+      payments:
+        kafka_topic: "payments"
+        rate_per_second: 8
+        max_messages: 400  # Generate 400 payments then stop
+        relationships:
+          order_id:
+            references: "orders.order_id"
+            recency_bias: true
+        derived_fields:
+          payment_id:
+            type: "uuid"
+          payment_date:
+            type: "timestamp"
+            format: "iso8601"
+          amount:
+            type: "random_float"
+            min: 10.0
+            max: 1000.0
+          payment_method:
+            type: "choice"
+            values: ["credit_card", "debit_card", "paypal", "bank_transfer"]
+          status:
+            type: "string"
+            initial_value: "completed"

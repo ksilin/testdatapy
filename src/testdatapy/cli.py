@@ -427,6 +427,11 @@ def list_generators():
     click.echo("  - Reads data from CSV files")
     click.echo("  - Cycles through the file when reaching the end")
     click.echo("  - Maintains original data types")
+    click.echo()
+    click.echo("correlated")
+    click.echo("  - Generates data with relationships between entities")
+    click.echo("  - Supports master data and transactional data")
+    click.echo("  - Ensures referential integrity for testing Flink joins")
 
 
 @cli.command()
@@ -443,6 +448,11 @@ def list_formats():
     click.echo("  - Apache Avro binary format")
     click.echo("  - Schema evolution support")
     click.echo("  - Requires schema registry")
+
+
+# Import and add correlated commands
+from testdatapy.cli_correlated import correlated
+cli.add_command(correlated)
 
 
 def main():

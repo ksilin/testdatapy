@@ -73,6 +73,9 @@ class TestTopicManagerIntegration:
                 replication_factor=1
             )
 
+            # Give Kafka time to propagate the topic creation
+            time.sleep(2)
+            
             # Verify it exists
             metadata = admin_client.list_topics(timeout=10)
             assert test_topic_name in metadata.topics

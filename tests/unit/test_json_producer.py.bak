@@ -13,7 +13,6 @@ class TestJsonProducer:
     def test_initialization(self):
         """Test producer initialization."""
         producer = JsonProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             config={"client.id": "test"},
@@ -28,7 +27,6 @@ class TestJsonProducer:
     def test_produce_with_explicit_key(self):
         """Test producing with explicit key."""
         producer = JsonProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
         )
@@ -47,7 +45,6 @@ class TestJsonProducer:
     def test_produce_with_key_field(self):
         """Test producing with key extracted from value."""
         producer = JsonProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             key_field="id",
@@ -65,7 +62,6 @@ class TestJsonProducer:
     def test_produce_without_key(self):
         """Test producing without key."""
         producer = JsonProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
         )
@@ -82,7 +78,6 @@ class TestJsonProducer:
     def test_delivery_callback(self):
         """Test delivery callback is called."""
         producer = JsonProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
         )
@@ -108,7 +103,6 @@ class TestJsonProducer:
     def test_flush(self):
         """Test flushing messages."""
         producer = JsonProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
         )
@@ -125,7 +119,6 @@ class TestJsonProducer:
     def test_context_manager(self):
         """Test using producer as context manager."""
         with JsonProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
         ) as producer:
@@ -136,7 +129,6 @@ class TestJsonProducer:
     def test_json_serialization(self):
         """Test JSON serialization of complex data."""
         producer = JsonProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
         )
@@ -161,7 +153,6 @@ class TestJsonProducer:
     def test_queue_size(self):
         """Test getting queue size."""
         producer = JsonProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
         )

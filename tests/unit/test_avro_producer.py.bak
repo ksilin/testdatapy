@@ -29,7 +29,6 @@ class TestAvroProducer:
     def test_initialization_with_schema_str(self, sample_schema):
         """Test producer initialization with schema string."""
         producer = AvroProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             schema_registry_url="http://localhost:8081",
@@ -48,7 +47,6 @@ class TestAvroProducer:
         schema_file.write_text(sample_schema)
 
         producer = AvroProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             schema_registry_url="http://localhost:8081",
@@ -60,7 +58,6 @@ class TestAvroProducer:
         """Test that initialization fails without schema."""
         with pytest.raises(ValueError, match="Either schema_path or schema_str must be provided"):
             AvroProducer(
-            auto_create_topic=False,
                 bootstrap_servers="localhost:9092",
                 topic="test-topic",
                 schema_registry_url="http://localhost:8081",
@@ -72,7 +69,6 @@ class TestAvroProducer:
     def test_produce_with_explicit_key(self, sample_schema):
         """Test producing with explicit key."""
         producer = AvroProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             schema_registry_url="http://localhost:8081",
@@ -94,7 +90,6 @@ class TestAvroProducer:
     def test_produce_with_key_field(self, sample_schema):
         """Test producing with key extracted from value."""
         producer = AvroProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             schema_registry_url="http://localhost:8081",
@@ -121,7 +116,6 @@ class TestAvroProducer:
         }
 
         producer = AvroProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             schema_registry_url="http://localhost:8081",
@@ -141,7 +135,6 @@ class TestAvroProducer:
     def test_register_schema(self, sample_schema):
         """Test schema registration."""
         producer = AvroProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             schema_registry_url="http://localhost:8081",
@@ -165,7 +158,6 @@ class TestAvroProducer:
     def test_get_latest_schema(self, sample_schema):
         """Test getting latest schema from registry."""
         producer = AvroProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             schema_registry_url="http://localhost:8081",
@@ -185,7 +177,6 @@ class TestAvroProducer:
     def test_delivery_callback(self, sample_schema):
         """Test delivery callback is called."""
         producer = AvroProducer(
-            auto_create_topic=False,
             bootstrap_servers="localhost:9092",
             topic="test-topic",
             schema_registry_url="http://localhost:8081",
