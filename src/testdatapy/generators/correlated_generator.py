@@ -43,6 +43,13 @@ class CorrelatedDataGenerator(DataGenerator):
         # Get entity configuration
         self.entity_config = config.get_transaction_config(entity_type)
         
+        # Add sequence counter for string formatting
+        self._sequence_counters = {}
+        
+        # Add record cache for reference lookups
+        if not hasattr(reference_pool, '_record_cache'):
+            reference_pool._record_cache = {}
+        
         # Set rate from config or override
         if rate_per_second is None:
             rate_per_second = self.entity_config.get("rate_per_second", 10.0)
@@ -93,7 +100,16 @@ class CorrelatedDataGenerator(DataGenerator):
         for field_name, field_config in self.entity_config.get("derived_fields", {}).items():
             record[field_name] = self._generate_derived_field(field_name, field_config, record)
         
-        # Track in reference pool if needed
+        # Track in reference pool for future references
+        # Always add to main pool so other generators can reference this entity
+        self.reference_pool.add_references(self.entity_type, [record[id_field]])
+        
+        # Store the full record for reference lookups
+        if self.entity_type not in self.reference_pool._record_cache:
+            self.reference_pool._record_cache[self.entity_type] = {}
+        self.reference_pool._record_cache[self.entity_type][record[id_field]] = record
+        
+        # Also track in recent items if configured for recency bias
         if self.entity_config.get("track_recent", False):
             self.reference_pool.add_recent(self.entity_type, record[id_field])
         
@@ -196,7 +212,17 @@ class CorrelatedDataGenerator(DataGenerator):
                 return int(datetime.now().timestamp())
         
         elif field_type == "string":
-            return field_config.get("initial_value", "")
+            # Handle string formatting with sequences
+            format_str = field_config.get("format")
+            if format_str and "{seq:" in format_str:
+                return self._format_sequential(format_str, self.entity_type, field_name)
+            else:
+                return field_config.get("initial_value", f"{field_name}_value")
+        
+        elif field_type == "float":
+            min_val = field_config.get("min", 0.0)
+            max_val = field_config.get("max", 100.0)
+            return round(random.uniform(min_val, max_val), 2)
         
         elif field_type == "random_float":
             min_val = field_config.get("min", 0.0)
@@ -210,6 +236,34 @@ class CorrelatedDataGenerator(DataGenerator):
         
         elif field_type == "conditional":
             return self._evaluate_conditional(field_config, record)
+        
+        elif field_type == "choice":
+            # Handle choice fields with random selection from choices
+            choices = field_config.get("choices", [])
+            if choices:
+                return random.choice(choices)
+            else:
+                return None
+        
+        elif field_type == "reference":
+            # Handle reference fields that get values from other records
+            source = field_config.get("source", "")
+            via = field_config.get("via", "")
+            
+            if source and via and via in record:
+                # Extract the entity type and field from source (e.g., "orders.total_amount")
+                if "." in source:
+                    ref_entity, ref_field = source.split(".", 1)
+                    # Look up the referenced record's value from the cache
+                    ref_id = record[via]
+                    if (hasattr(self.reference_pool, '_record_cache') and 
+                        ref_entity in self.reference_pool._record_cache and
+                        ref_id in self.reference_pool._record_cache[ref_entity]):
+                        ref_record = self.reference_pool._record_cache[ref_entity][ref_id]
+                        if ref_field in ref_record:
+                            return ref_record[ref_field]
+            # Fallback to a random value if reference not found
+            return round(random.uniform(10.0, 1000.0), 2)
         
         else:
             return None
@@ -236,6 +290,26 @@ class CorrelatedDataGenerator(DataGenerator):
                 return condition["else"]
         
         return None
+    
+    def _format_sequential(self, format_str: str, entity_type: str, field_name: str) -> str:
+        """Handle sequential formatting like ORDER_{seq:05d}."""
+        import re
+        match = re.search(r'\{seq:(\d+)d\}', format_str)
+        if match:
+            width = int(match.group(1))
+            counter_key = f"{entity_type}_{field_name}"
+            
+            if counter_key not in self._sequence_counters:
+                self._sequence_counters[counter_key] = 1
+            
+            current = self._sequence_counters[counter_key]
+            self._sequence_counters[counter_key] += 1
+            
+            # Replace the sequence placeholder
+            seq_str = str(current).zfill(width)
+            return format_str.replace(match.group(0), seq_str)
+        
+        return format_str
     
     def _get_weight_function(self, weight_field: str) -> Callable[[str], float]:
         """Get a weight function for weighted selection."""

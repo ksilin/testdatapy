@@ -1,0 +1,87 @@
+# Production-Ready E-commerce Correlated Data Configuration
+# This config demonstrates clean, concise syntax for real-world use cases
+# Use this configuration when you need:
+# - Sequential, predictable IDs for debugging
+# - Consistent data relationships (payment amount = order amount)
+# - Production-realistic rates
+# - Structured schema definitions
+
+master_data:
+  customers:
+    source: faker
+    count: 100
+    kafka_topic: customers
+    id_field: customer_id
+    bulk_load: true               # Load all master data at once
+    schema:
+      customer_id:
+        type: string
+        format: "CUST_{seq:04d}"  # Sequential customer IDs (CUST_0001, etc.)
+      name:
+        type: faker
+        method: name
+      email:
+        type: faker
+        method: email
+      phone:
+        type: faker
+        method: phone_number
+      country:
+        type: faker
+        method: country
+      created_at:
+        type: faker
+        method: iso8601
+
+transactional_data:
+  orders:
+    kafka_topic: orders
+    rate_per_second: 10           # Production-realistic rate
+    max_messages: 50
+    track_recent: true            # Required for payment correlation
+    relationships:
+      customer_id:
+        references: customers.customer_id
+        distribution: zipf          # Some customers are more active
+        alpha: 1.5
+    derived_fields:
+      order_id:
+        type: string
+        format: "ORDER_{seq:05d}"  # Sequential order IDs for easy tracking
+      order_date:
+        type: timestamp
+        format: iso8601
+      total_amount:
+        type: float
+        min: 10.0
+        max: 1000.0
+      status:
+        type: string
+        initial_value: "pending"
+        
+  payments:
+    kafka_topic: payments
+    rate_per_second: 8            # Slightly lower than orders (realistic)
+    max_messages: 40
+    relationships:
+      order_id:
+        references: orders.order_id
+        recency_bias: true          # Pay for recent orders first
+        max_delay_minutes: 30       # Payments arrive within 30 minutes
+    derived_fields:
+      payment_id:
+        type: string
+        format: "PAY_{seq:06d}"     # Sequential payment IDs
+      payment_date:
+        type: timestamp
+        format: iso8601
+      amount:
+        type: reference             # *** KEY FEATURE: Payment amount matches order amount ***
+        source: orders.total_amount
+        via: order_id
+      payment_method:
+        type: choice
+        choices: ["credit_card", "debit_card", "paypal", "bank_transfer"]
+      status:
+        type: string
+        initial_value: "completed"

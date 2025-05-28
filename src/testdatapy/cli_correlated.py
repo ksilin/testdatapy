@@ -46,9 +46,18 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
             if producer_config:
                 with open(producer_config, 'r') as f:
                     import json
-                    kafka_config.update(json.load(f))
+                    additional_config = json.load(f)
+                    kafka_config.update(additional_config)
             
-            producer = JsonProducer(**kafka_config)
+            # Extract bootstrap_servers and pass remaining as config
+            servers = kafka_config.pop("bootstrap.servers", bootstrap_servers)
+            
+            # We need a dummy topic for the producer - will be overridden per message
+            producer = JsonProducer(
+                bootstrap_servers=servers,
+                topic="dummy",  # Will be overridden in produce calls
+                config=kafka_config
+            )
         except Exception as e:
             click.echo(f"Error creating producer: {e}", err=True)
             sys.exit(1)
@@ -96,7 +105,9 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                 generator = CorrelatedDataGenerator(
                     entity_type=entity_type,
                     config=correlation_config,
-                    reference_pool=ref_pool
+                    reference_pool=ref_pool,
+                    rate_per_second=entity_config.get("rate_per_second"),
+                    max_messages=entity_config.get("max_messages")
                 )
                 
                 # Track recent items if needed
@@ -116,7 +127,19 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                         id_field = entity_config.get("id_field", f"{entity_type[:-1]}_id")
                         key = record.get(id_field)
                         
-                        producer.produce(key=key, value=record, topic=topic)
+                        # Create topic-specific producer if needed
+                        if not hasattr(producer, '_topic_producers'):
+                            producer._topic_producers = {}
+                        
+                        if topic not in producer._topic_producers:
+                            producer._topic_producers[topic] = JsonProducer(
+                                bootstrap_servers=producer.bootstrap_servers,
+                                topic=topic,
+                                config=producer.config,
+                                auto_create_topic=True
+                            )
+                        
+                        producer._topic_producers[topic].produce(key=key, value=record)
                     
                     # Show progress
                     if count % 1000 == 0:
@@ -143,7 +166,12 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
             click.echo(f"    Accesses: {type_stats['access_count']}")
     
     if producer and not dry_run:
-        producer.flush()
+        # Flush all topic-specific producers
+        if hasattr(producer, '_topic_producers'):
+            for topic_producer in producer._topic_producers.values():
+                topic_producer.flush()
+        else:
+            producer.flush()
         click.echo("\nAll data produced to Kafka successfully!")
 
 

@@ -235,12 +235,26 @@ class MasterDataGenerator:
         data = self.loaded_data.get(entity_type, [])
         id_field = entity_config.get("id_field", f"{entity_type[:-1]}_id")
         
+        # Create topic-specific producer if needed
+        if not hasattr(self.producer, '_topic_producers'):
+            self.producer._topic_producers = {}
+        
+        if topic not in self.producer._topic_producers:
+            from testdatapy.producers import JsonProducer
+            self.producer._topic_producers[topic] = JsonProducer(
+                bootstrap_servers=self.producer.bootstrap_servers,
+                topic=topic,
+                config=self.producer.config,
+                auto_create_topic=True
+            )
+        
+        topic_producer = self.producer._topic_producers[topic]
+        
         for record in data:
             key = record.get(id_field)
-            self.producer.produce(
+            topic_producer.produce(
                 key=key,
-                value=record,
-                topic=topic  # Some producers might need this
+                value=record
             )
     
     def get_loaded_data(self, entity_type: str) -> List[Dict[str, Any]]:

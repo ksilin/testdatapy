@@ -15,7 +15,7 @@ class ReferencePool:
     def __init__(self):
         """Initialize an empty reference pool."""
         self._references: Dict[str, List[str]] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # Use reentrant lock to prevent deadlock
         self._recent_items: Dict[str, deque] = {}
         self._recent_window_sizes: Dict[str, int] = {}
         self._stats_enabled = False
