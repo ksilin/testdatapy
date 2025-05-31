@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package com.example.protobuf;
+
+// Customer entity for e-commerce system
+message Customer {
+  string customer_id = 1;
+  string name = 2;
+  string email = 3;
+  string phone = 4;
+  string tier = 5;  // premium, regular, etc.
+  
+  // Address information
+  message Address {
+    string street = 1;
+    string city = 2;
+    string postal_code = 3;
+    string country_code = 4;
+  }
+  
+  Address address = 6;
+  
+  // Metadata
+  string created_at = 7;
+  string updated_at = 8;
+}

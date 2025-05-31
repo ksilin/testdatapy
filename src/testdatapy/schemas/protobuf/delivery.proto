@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package com.example.protobuf;
+
+// Delivery entity for e-commerce system
+message Delivery {
+  string delivery_id = 1;
+  string order_id = 2;
+  string tracking_number = 3;
+  string carrier = 4;  // FedEx, UPS, USPS, DHL, etc.
+  string status = 5;  // pending, in_transit, delivered, failed
+  
+  // Delivery timeline
+  string shipped_date = 6;
+  string estimated_delivery_date = 7;
+  string actual_delivery_date = 8;
+  
+  // Delivery address
+  message DeliveryAddress {
+    string recipient_name = 1;
+    string street = 2;
+    string city = 3;
+    string postal_code = 4;
+    string country_code = 5;
+    string phone = 6;
+  }
+  
+  DeliveryAddress delivery_address = 9;
+  
+  // Tracking events
+  message TrackingEvent {
+    string event_time = 1;
+    string location = 2;
+    string status = 3;
+    string description = 4;
+  }
+  
+  repeated TrackingEvent tracking_events = 10;
+  
+  // Metadata
+  string created_at = 11;
+  string updated_at = 12;
+}

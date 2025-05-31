@@ -8,6 +8,7 @@ from testdatapy.generators import ReferencePool, CorrelatedDataGenerator
 from testdatapy.generators.master_data_generator import MasterDataGenerator
 from testdatapy.config.correlation_config import CorrelationConfig
 from testdatapy.producers import JsonProducer
+from testdatapy.producers.protobuf_producer import ProtobufProducer
 
 
 @click.group()
@@ -23,7 +24,9 @@ def correlated():
 @click.option('--dry-run', is_flag=True, help='Print data without producing to Kafka')
 @click.option('--master-only', is_flag=True, help='Only load master data')
 @click.option('--transaction-only', is_flag=True, help='Only generate transactional data')
-def generate(config, bootstrap_servers, producer_config, dry_run, master_only, transaction_only):
+@click.option('--format', '-f', type=click.Choice(['json', 'protobuf']), default='json', help='Output format')
+@click.option('--schema-registry-url', '-s', help='Schema Registry URL (required for protobuf)')
+def generate(config, bootstrap_servers, producer_config, dry_run, master_only, transaction_only, format, schema_registry_url):
     """Generate correlated test data based on configuration."""
     
     # Load configuration
@@ -37,8 +40,15 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
     ref_pool = ReferencePool()
     ref_pool.enable_stats()
     
+    # Validate protobuf requirements
+    if format == 'protobuf' and not schema_registry_url:
+        click.echo("Error: Protobuf format requires --schema-registry-url", err=True)
+        sys.exit(1)
+    
     # Setup producer if not dry run
     producer = None
+    topic_producers = {}  # Store per-topic producers for protobuf
+    
     if not dry_run:
         try:
             kafka_config = {"bootstrap.servers": bootstrap_servers}
@@ -52,12 +62,18 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
             # Extract bootstrap_servers and pass remaining as config
             servers = kafka_config.pop("bootstrap.servers", bootstrap_servers)
             
-            # We need a dummy topic for the producer - will be overridden per message
-            producer = JsonProducer(
-                bootstrap_servers=servers,
-                topic="dummy",  # Will be overridden in produce calls
-                config=kafka_config
-            )
+            if format == 'json':
+                # We need a dummy topic for the producer - will be overridden per message
+                producer = JsonProducer(
+                    bootstrap_servers=servers,
+                    topic="dummy",  # Will be overridden in produce calls
+                    config=kafka_config
+                )
+            elif format == 'protobuf':
+                # For protobuf, we'll create producers per topic later
+                # as we need specific protobuf classes for each entity type
+                pass
+                
         except Exception as e:
             click.echo(f"Error creating producer: {e}", err=True)
             sys.exit(1)
@@ -87,7 +103,56 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
             
             # Produce if not dry run
             if not dry_run:
-                master_gen.produce_all()
+                if format == 'json':
+                    master_gen.produce_all()
+                elif format == 'protobuf':
+                    # Produce master data with protobuf
+                    try:
+                        from testdatapy.schemas.protobuf import customer_pb2
+                        customer_class = customer_pb2.Customer
+                    except ImportError:
+                        customer_class = None
+                    
+                    try:
+                        from testdatapy.schemas.protobuf import product_pb2
+                        product_class = product_pb2.Product
+                    except ImportError:
+                        product_class = None
+                    
+                    for entity_type, entity_config in correlation_config.config.get("master_data", {}).items():
+                        topic = entity_config.get("kafka_topic")
+                        id_field = entity_config.get("id_field", f"{entity_type[:-1]}_id")
+                        
+                        # Map entity types to protobuf classes
+                        proto_classes = {
+                            'customers': customer_class,
+                            'products': product_class
+                        }
+                        
+                        proto_class = proto_classes.get(entity_type)
+                        if not proto_class:
+                            click.echo(f"Warning: No protobuf class for {entity_type}, using JSON", err=True)
+                            # Fall back to JSON for this entity
+                            continue
+                        
+                        if topic not in topic_producers:
+                            topic_producers[topic] = ProtobufProducer(
+                                bootstrap_servers=servers,
+                                topic=topic,
+                                schema_registry_url=schema_registry_url,
+                                schema_proto_class=proto_class,
+                                config=kafka_config.copy(),
+                                key_field=id_field,
+                                auto_create_topic=True
+                            )
+                        
+                        # Produce each record
+                        data = master_gen.loaded_data.get(entity_type, [])
+                        for record in data:
+                            topic_producers[topic].produce(record)
+                        
+                        topic_producers[topic].flush()
+                
                 click.echo("Master data produced to Kafka")
                 
         except Exception as e:
@@ -127,19 +192,54 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                         id_field = entity_config.get("id_field", f"{entity_type[:-1]}_id")
                         key = record.get(id_field)
                         
-                        # Create topic-specific producer if needed
-                        if not hasattr(producer, '_topic_producers'):
-                            producer._topic_producers = {}
+                        if format == 'json':
+                            # Create topic-specific producer if needed
+                            if not hasattr(producer, '_topic_producers'):
+                                producer._topic_producers = {}
+                            
+                            if topic not in producer._topic_producers:
+                                producer._topic_producers[topic] = JsonProducer(
+                                    bootstrap_servers=producer.bootstrap_servers,
+                                    topic=topic,
+                                    config=producer.config,
+                                    auto_create_topic=True
+                                )
+                            
+                            producer._topic_producers[topic].produce(key=key, value=record)
                         
-                        if topic not in producer._topic_producers:
-                            producer._topic_producers[topic] = JsonProducer(
-                                bootstrap_servers=producer.bootstrap_servers,
-                                topic=topic,
-                                config=producer.config,
-                                auto_create_topic=True
-                            )
-                        
-                        producer._topic_producers[topic].produce(key=key, value=record)
+                        elif format == 'protobuf':
+                            # Create protobuf producer for this entity type if needed
+                            if topic not in topic_producers:
+                                # Import the protobuf class for this entity type
+                                try:
+                                    from testdatapy.schemas.protobuf import customer_pb2, order_pb2, payment_pb2
+                                    
+                                    # Map entity types to protobuf classes
+                                    proto_classes = {
+                                        'customers': customer_pb2.Customer,
+                                        'orders': order_pb2.Order,
+                                        'payments': payment_pb2.Payment
+                                    }
+                                    
+                                    proto_class = proto_classes.get(entity_type)
+                                    if not proto_class:
+                                        click.echo(f"Warning: No protobuf class for {entity_type}, skipping", err=True)
+                                        continue
+                                    
+                                    topic_producers[topic] = ProtobufProducer(
+                                        bootstrap_servers=servers,
+                                        topic=topic,
+                                        schema_registry_url=schema_registry_url,
+                                        schema_proto_class=proto_class,
+                                        config=kafka_config.copy(),
+                                        key_field=id_field,
+                                        auto_create_topic=True
+                                    )
+                                except ImportError as e:
+                                    click.echo(f"Error importing protobuf schemas: {e}", err=True)
+                                    sys.exit(1)
+                            
+                            topic_producers[topic].produce(record)
                     
                     # Show progress
                     if count % 1000 == 0:
@@ -165,13 +265,18 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
             click.echo(f"    References: {type_stats['reference_count']}")
             click.echo(f"    Accesses: {type_stats['access_count']}")
     
-    if producer and not dry_run:
-        # Flush all topic-specific producers
-        if hasattr(producer, '_topic_producers'):
-            for topic_producer in producer._topic_producers.values():
+    if not dry_run:
+        # Flush all producers
+        if format == 'json' and producer:
+            if hasattr(producer, '_topic_producers'):
+                for topic_producer in producer._topic_producers.values():
+                    topic_producer.flush()
+            else:
+                producer.flush()
+        elif format == 'protobuf':
+            for topic_producer in topic_producers.values():
                 topic_producer.flush()
-        else:
-            producer.flush()
+        
         click.echo("\nAll data produced to Kafka successfully!")
 
 

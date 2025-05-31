@@ -5,7 +5,7 @@ description = "Test data generation tool for Kafka with Faker and CSV support"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "confluent-kafka[avro]>=2.3.0",
+    "confluent-kafka[avro,protobuf]>=2.3.0",
     "faker>=24.4.0",
     "pandas>=2.2.0",
     "click>=8.1.7",
@@ -14,6 +14,7 @@ dependencies = [
     "prometheus-client>=0.20.0",
     "flask>=3.0.0",
     "requests>=2.31.0",
+    "protobuf>=4.25.0",
 ]
 
 [project.optional-dependencies]

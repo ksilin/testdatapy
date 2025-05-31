@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package com.example.protobuf;
+
+// Payment entity for e-commerce system
+message Payment {
+  string payment_id = 1;
+  string order_id = 2;
+  string customer_id = 3;
+  string payment_date = 4;
+  double amount = 5;
+  string currency = 6;
+  string payment_method = 7;  // credit_card, debit_card, paypal, bank_transfer
+  string status = 8;  // pending, completed, failed, refunded
+  
+  // Payment method details (optional based on method)
+  oneof payment_details {
+    CreditCardDetails credit_card = 9;
+    BankTransferDetails bank_transfer = 10;
+    PayPalDetails paypal = 11;
+  }
+  
+  // Transaction reference
+  string transaction_reference = 12;
+  
+  // Metadata
+  string created_at = 13;
+  string updated_at = 14;
+}
+
+// Credit card payment details
+message CreditCardDetails {
+  string last_four_digits = 1;
+  string card_brand = 2;  // visa, mastercard, amex, etc.
+  string card_holder_name = 3;
+}
+
+// Bank transfer details
+message BankTransferDetails {
+  string bank_name = 1;
+  string account_number_suffix = 2;
+  string routing_number = 3;
+}
+
+// PayPal details
+message PayPalDetails {
+  string paypal_email = 1;
+  string paypal_transaction_id = 2;
+}

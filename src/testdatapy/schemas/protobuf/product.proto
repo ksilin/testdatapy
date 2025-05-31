@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package com.example.protobuf;
+
+// Product entity for e-commerce system
+message Product {
+  string product_id = 1;
+  string name = 2;
+  string description = 3;
+  string category = 4;
+  double price = 5;
+  string currency = 6;
+  int32 stock_quantity = 7;
+  
+  // Product attributes
+  map<string, string> attributes = 8;
+  
+  // Metadata
+  string created_at = 9;
+  string updated_at = 10;
+}

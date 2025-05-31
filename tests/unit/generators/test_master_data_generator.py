@@ -139,6 +139,7 @@ class TestMasterDataGenerator:
         
         # Mock producer
         mock_producer = Mock(spec=KafkaProducer)
+        mock_producer.bootstrap_servers = "localhost:9092"
         
         generator = MasterDataGenerator(
             config=config,
@@ -176,6 +177,7 @@ class TestMasterDataGenerator:
         config = CorrelationConfig(config_dict)
         ref_pool = ReferencePool()
         mock_producer = Mock(spec=KafkaProducer)
+        mock_producer.bootstrap_servers = "localhost:9092"
         
         generator = MasterDataGenerator(
             config=config,

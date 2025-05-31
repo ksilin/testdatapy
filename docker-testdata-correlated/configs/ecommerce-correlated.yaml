@@ -26,10 +26,26 @@ master_data:
       phone:
         type: faker
         method: phone_number
-      country:
+      tier:
+        type: choice
+        choices: ["premium", "regular", "basic"]
+      # For now, generate address as individual fields since complex objects aren't fully supported
+      street:
         type: faker
-        method: country
+        method: street_address
+      city:
+        type: faker
+        method: city
+      postal_code:
+        type: faker
+        method: postcode
+      country_code:
+        type: faker
+        method: country_code
       created_at:
+        type: faker
+        method: iso8601
+      updated_at:
         type: faker
         method: iso8601
 

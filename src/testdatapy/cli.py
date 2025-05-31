@@ -9,7 +9,7 @@ from testdatapy.config.loader import AppConfig
 from testdatapy.generators import CSVGenerator, FakerGenerator
 from testdatapy.health import create_health_monitor
 from testdatapy.metrics.collector import create_metrics_collector
-from testdatapy.producers import AvroProducer, JsonProducer
+from testdatapy.producers import AvroProducer, JsonProducer, ProtobufProducer
 from testdatapy.schema_evolution import SchemaEvolutionManager
 from testdatapy.shutdown import GracefulProducer, create_shutdown_handler
 
@@ -32,7 +32,7 @@ def cli():
 @click.option(
     "--format",
     "-f",
-    type=click.Choice(["json", "avro"]),
+    type=click.Choice(["json", "avro", "protobuf"]),
     default="json",
     help="Message format",
 )
@@ -44,6 +44,8 @@ def cli():
     help="Data generator type",
 )
 @click.option("--schema-file", type=click.Path(exists=True), help="Avro schema file")
+@click.option("--proto-file", type=click.Path(exists=True), help="Protobuf schema file (.proto)")
+@click.option("--proto-class", help="Fully qualified protobuf message class name (e.g., 'mypackage.Customer')")
 @click.option("--csv-file", type=click.Path(exists=True), help="CSV file for csv generator")
 @click.option("--key-field", help="Field to use as message key")
 @click.option("--rate", type=float, help="Messages per second")
@@ -64,6 +66,8 @@ def produce(
     format: str,
     generator: str,
     schema_file: str | None,
+    proto_file: str | None,
+    proto_class: str | None,
     csv_file: str | None,
     key_field: str | None,
     rate: float,
@@ -118,6 +122,8 @@ def produce(
     if generator == "faker":
         if format == "avro" and not schema_file:
             raise click.UsageError("Avro format requires --schema-file")
+        if format == "protobuf" and not proto_class:
+            raise click.UsageError("Protobuf format requires --proto-class")
 
         data_generator = FakerGenerator(
             rate_per_second=app_config.producer.rate_per_second,
@@ -171,6 +177,28 @@ def produce(
                 auto_create_topic=auto_create_topic,
                 topic_config=topic_config,
             )
+        elif format == "protobuf":
+            if not proto_class:
+                raise click.UsageError("Protobuf format requires --proto-class")
+            
+            # Import the protobuf class dynamically
+            module_name, class_name = proto_class.rsplit('.', 1)
+            module = __import__(module_name, fromlist=[class_name])
+            proto_message_class = getattr(module, class_name)
+            
+            sr_config = app_config.to_schema_registry_config()
+            producer = ProtobufProducer(
+                bootstrap_servers=app_config.kafka.bootstrap_servers,
+                topic=topic,
+                schema_registry_url=app_config.schema_registry.url,
+                schema_proto_class=proto_message_class,
+                schema_file_path=proto_file,
+                config=kafka_config,
+                schema_registry_config=sr_config,
+                key_field=key_field,
+                auto_create_topic=auto_create_topic,
+                topic_config=topic_config,
+            )
         else:
             raise click.BadParameter(f"Unknown format: {format}")
         
@@ -201,6 +229,10 @@ def produce(
             with open(schema_file) as f:
                 schema = json.load(f)
             data_iterator = data_generator.generate_generic(schema)
+        elif generator == "faker" and format == "protobuf" and proto_class:
+            # For protobuf, we'll use generic generation with field mapping
+            # The protobuf producer will handle conversion
+            data_iterator = data_generator.generate()
         else:
             # Use default generation
             data_iterator = data_generator.generate()
@@ -448,6 +480,11 @@ def list_formats():
     click.echo("  - Apache Avro binary format")
     click.echo("  - Schema evolution support")
     click.echo("  - Requires schema registry")
+    click.echo()
+    click.echo("protobuf")
+    click.echo("  - Protocol Buffers binary format")
+    click.echo("  - Efficient serialization")
+    click.echo("  - Requires schema registry and proto class")
 
 
 # Import and add correlated commands
