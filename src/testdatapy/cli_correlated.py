@@ -26,7 +26,8 @@ def correlated():
 @click.option('--transaction-only', is_flag=True, help='Only generate transactional data')
 @click.option('--format', '-f', type=click.Choice(['json', 'protobuf']), default='json', help='Output format')
 @click.option('--schema-registry-url', '-s', help='Schema Registry URL (required for protobuf)')
-def generate(config, bootstrap_servers, producer_config, dry_run, master_only, transaction_only, format, schema_registry_url):
+@click.option('--clean-topics', is_flag=True, help='Clean topics before generation')
+def generate(config, bootstrap_servers, producer_config, dry_run, master_only, transaction_only, format, schema_registry_url, clean_topics):
     """Generate correlated test data based on configuration."""
     
     # Load configuration
@@ -77,6 +78,57 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
         except Exception as e:
             click.echo(f"Error creating producer: {e}", err=True)
             sys.exit(1)
+    
+    # Phase 0: Clean topics if requested
+    if clean_topics and not dry_run:
+        click.echo("Cleaning topics...")
+        try:
+            from testdatapy.topics import TopicManager
+            
+            # Get all topics from configuration
+            topics_to_clean = []
+            
+            # Master data topics
+            for entity_config in correlation_config.config.get("master_data", {}).values():
+                topic = entity_config.get("kafka_topic")
+                if topic:
+                    topics_to_clean.append(topic)
+            
+            # Transactional data topics
+            for entity_config in correlation_config.config.get("transactional_data", {}).values():
+                topic = entity_config.get("kafka_topic") 
+                if topic:
+                    topics_to_clean.append(topic)
+            
+            if topics_to_clean:
+                # Create topic manager
+                kafka_config = {"bootstrap.servers": bootstrap_servers}
+                if producer_config:
+                    with open(producer_config, 'r') as f:
+                        import json
+                        additional_config = json.load(f)
+                        kafka_config.update(additional_config)
+                
+                topic_manager = TopicManager(bootstrap_servers, kafka_config)
+                
+                # Delete topics
+                for topic in topics_to_clean:
+                    try:
+                        if topic_manager.topic_exists(topic):
+                            topic_manager.delete_topic(topic)
+                            click.echo(f"  ✓ Deleted topic: {topic}")
+                        else:
+                            click.echo(f"  - Topic not found: {topic}")
+                    except Exception as e:
+                        click.echo(f"  ✗ Failed to delete {topic}: {e}")
+                
+                click.echo(f"Topic cleanup completed for {len(topics_to_clean)} topics")
+            else:
+                click.echo("No topics found in configuration to clean")
+                
+        except Exception as e:
+            click.echo(f"Error during topic cleanup: {e}", err=True)
+            # Don't exit - continue with generation
     
     # Phase 1: Load master data
     if not transaction_only:

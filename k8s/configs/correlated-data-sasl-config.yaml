@@ -1,41 +1,49 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: testdatapy-correlated-config
-  namespace: confluent
+  name: testdatapy-correlated-sasl-config
+  namespace: default
 data:
   kafka-config.json: |
     {
-      "bootstrap.servers": "kafka.confluent.svc.cluster.local:9071",
-      "security.protocol": "SASL_SSL",
+      "bootstrap.servers": "kafka.confluent:9092",
+      "security.protocol": "SASL_PLAINTEXT",
       "sasl.mechanism": "PLAIN",
       "sasl.username": "kafka",
-      "sasl.password": "kafka-secret",
-      "ssl.ca.location": "/mnt/sslcerts/ca-pem/ca-cert.pem"
+      "sasl.password": "kafka-secret"
     }
   correlation-config.yaml: |
     master_data:
       customers:
-        kafka_topic: "customers"
+        kafka_topic: "ecommerce-customers"
         id_field: "customer_id"
-        source: "generator"
-        generator_config:
-          type: "faker"
-          template:
-            customer_id: "CUST_{{random_int(1000, 9999)}}"
-            name: "{{name}}"
-            email: "{{email}}"
-            phone: "{{phone_number}}"
-            country: "{{country}}"
-          count: 100  # Generate 100 customers
+        source: "faker"
+        count: 50
+        bulk_load: true
+        schema:
+          customer_id:
+            type: "string"
+            format: "CUST_{seq:04d}"
+          name:
+            type: "faker"
+            method: "name"
+          email:
+            type: "faker"
+            method: "email"
+          phone:
+            type: "faker"
+            method: "phone_number"
+          country:
+            type: "faker"
+            method: "country"
 
     transactional_data:
       orders:
-        kafka_topic: "orders"
+        kafka_topic: "ecommerce-orders"
         id_field: "order_id"
-        rate_per_second: 10
+        rate_per_second: 5
         track_recent: true
-        max_messages: 500  # Generate 500 orders then stop
+        max_messages: 500  # Smaller for testing
         relationships:
           customer_id:
             references: "customers.customer_id"
@@ -50,15 +58,15 @@ data:
           total_amount:
             type: "random_float"
             min: 10.0
-            max: 1000.0
+            max: 500.0
           status:
             type: "string"
             initial_value: "pending"
             
       payments:
-        kafka_topic: "payments"
-        rate_per_second: 8
-        max_messages: 400  # Generate 400 payments then stop
+        kafka_topic: "ecommerce-payments"
+        rate_per_second: 3
+        max_messages: 200  # Smaller for testing
         relationships:
           order_id:
             references: "orders.order_id"
@@ -70,9 +78,9 @@ data:
             type: "timestamp"
             format: "iso8601"
           amount:
-            type: "random_float"
-            min: 10.0
-            max: 1000.0
+            type: "reference"
+            source: "orders.total_amount"
+            via: "order_id"
           payment_method:
             type: "choice"
             values: ["credit_card", "debit_card", "paypal", "bank_transfer"]

@@ -204,7 +204,10 @@ class CorrelatedDataGenerator(DataGenerator):
         """Generate a derived field value."""
         field_type = field_config.get("type")
         
-        if field_type == "timestamp":
+        if field_type == "uuid":
+            return str(uuid.uuid4())
+        
+        elif field_type == "timestamp":
             format_type = field_config.get("format", "iso8601")
             if format_type == "iso8601":
                 return datetime.now().isoformat()

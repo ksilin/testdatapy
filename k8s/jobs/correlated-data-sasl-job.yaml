@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: testdatapy-correlated-sasl
+  namespace: default
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: testdatapy-correlated-sasl
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: testdatapy-correlated
+        image: ghcr.io/ksilin/testdatapy:0.0.1
+        imagePullPolicy: Always
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Running correlated data generation with topic cleanup..."
+          testdatapy correlated generate \
+            --config /config/correlation-config.yaml \
+            --producer-config /config/kafka-config.json \
+            --clean-topics
+        args: []
+        env:
+        volumeMounts:
+        - name: config
+          mountPath: /config
+      volumes:
+      - name: config
+        configMap:
+          name: testdatapy-correlated-sasl-config

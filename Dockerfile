@@ -1,7 +1,6 @@
 FROM python:3.11-slim
 
-# Install build dependencies
-# Install native dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     libsasl2-dev \
@@ -11,26 +10,23 @@ RUN apt-get update && apt-get install -y \
     librdkafka-dev \
     python3-dev \
     openssl \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
-WORKDIR /app
+# Install UV for modern Python package management
+RUN pip install --no-cache-dir uv
 
-# Install confluent-kafka[avro]
-RUN pip install --no-cache-dir "confluent-kafka[avro]>=2.3.0"
+# Set working directory to match k8s PYTHONPATH expectations
+WORKDIR /opt/testdatapy
 
-# Install remaining dependencies (excluding confluent-kafka from requirements.txt)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the application code
+# Copy all project files for complete package installation
 COPY . .
 
-# Install the package
-RUN pip install --no-cache-dir -e .
+# Install dependencies and package using UV
+RUN uv pip install --system -e .
 
-# Create a non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+# Create non-root user
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /opt/testdatapy
 USER appuser
 
 # Default command

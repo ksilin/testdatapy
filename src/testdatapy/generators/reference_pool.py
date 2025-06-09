@@ -114,6 +114,10 @@ class ReferencePool:
             if ref_type not in self._references or not self._references[ref_type]:
                 raise ValueError(f"No references found for type: {ref_type}")
             
+            if self._stats_enabled:
+                self._stats[ref_type]["access_count"] += 1
+                self._stats[ref_type]["last_access"] = threading.get_ident()
+            
             references = self._references[ref_type]
             weights = [weight_func(ref) for ref in references]
             return random.choices(references, weights=weights)[0]
@@ -168,6 +172,10 @@ class ReferencePool:
             recent = self.get_recent(ref_type)
             if not recent:
                 raise ValueError(f"No recent items for type: {ref_type}")
+            
+            if self._stats_enabled:
+                self._stats[ref_type]["access_count"] += 1
+                self._stats[ref_type]["last_access"] = threading.get_ident()
             
             if bias_recent:
                 # Weight more recent items higher

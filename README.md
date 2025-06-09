@@ -70,7 +70,7 @@ testdatapy produce \
 
 ## Configuration
 
-### Configuration File
+### Kafka Connectivity Configuration File
 
 Create a JSON configuration file:
 
