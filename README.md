@@ -373,6 +373,11 @@ ENTRYPOINT ["testdatapy"]
 
 MIT License - see LICENSE file for details
 
+
+## package
+
+https://github.com/users/ksilin/packages/container/testdatapy/settings
+
 ## Acknowledgments
 
 - Built with [Confluent Kafka Python](https://github.com/confluentinc/confluent-kafka-python)

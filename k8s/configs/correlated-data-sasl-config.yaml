@@ -83,7 +83,7 @@ data:
             via: "order_id"
           payment_method:
             type: "choice"
-            values: ["credit_card", "debit_card", "paypal", "bank_transfer"]
+            choices: ["credit_card", "debit_card", "paypal", "bank_transfer"]
           status:
             type: "string"
             initial_value: "completed"

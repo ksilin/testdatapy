@@ -25,7 +25,6 @@ spec:
             --producer-config /config/kafka-config.json \
             --clean-topics
         args: []
-        env:
         volumeMounts:
         - name: config
           mountPath: /config
