@@ -9,6 +9,7 @@ from testdatapy.generators.master_data_generator import MasterDataGenerator
 from testdatapy.config.correlation_config import CorrelationConfig
 from testdatapy.producers import JsonProducer
 from testdatapy.producers.protobuf_producer import ProtobufProducer
+from testdatapy.schemas.schema_loader import get_protobuf_class_for_entity, fallback_to_hardcoded_mapping
 
 
 @click.group()
@@ -158,33 +159,32 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                 if format == 'json':
                     master_gen.produce_all()
                 elif format == 'protobuf':
-                    # Produce master data with protobuf
-                    try:
-                        from testdatapy.schemas.protobuf import customer_pb2
-                        customer_class = customer_pb2.Customer
-                    except ImportError:
-                        customer_class = None
-                    
-                    try:
-                        from testdatapy.schemas.protobuf import product_pb2
-                        product_class = product_pb2.Product
-                    except ImportError:
-                        product_class = None
-                    
+                    # Produce master data with protobuf using dynamic loading
                     for entity_type, entity_config in correlation_config.config.get("master_data", {}).items():
                         topic = entity_config.get("kafka_topic")
-                        id_field = entity_config.get("id_field", f"{entity_type[:-1]}_id")
+                        # Use consistent key field priority logic for master data
+                        key_field = correlation_config.get_key_field(entity_type, is_master=True)
                         
-                        # Map entity types to protobuf classes
-                        proto_classes = {
-                            'customers': customer_class,
-                            'products': product_class
-                        }
-                        
-                        proto_class = proto_classes.get(entity_type)
-                        if not proto_class:
-                            click.echo(f"Warning: No protobuf class for {entity_type}, using JSON", err=True)
-                            # Fall back to JSON for this entity
+                        # Try to get protobuf class using dynamic loading
+                        proto_class = None
+                        try:
+                            # First try configuration-based loading
+                            proto_class = get_protobuf_class_for_entity(entity_config, entity_type)
+                            
+                            # If no config-based class found, try hardcoded mapping fallback
+                            if proto_class is None:
+                                proto_class = fallback_to_hardcoded_mapping(entity_type)
+                            
+                            if proto_class is None:
+                                click.echo(f"Warning: No protobuf class found for {entity_type}, using JSON", err=True)
+                                continue
+                                
+                        except Exception as e:
+                            click.echo(f"❌ Error loading protobuf class for {entity_type}: {e}", err=True)
+                            if hasattr(e, '__class__') and 'ModuleNotFoundError' in str(e.__class__):
+                                click.echo(f"💡 Hint: Ensure protobuf module is compiled with: protoc --python_out=. your_schema.proto", err=True)
+                                click.echo(f"💡 Or specify 'schema_path' in configuration to use custom location", err=True)
+                            click.echo(f"⚠️  Falling back to JSON for {entity_type}", err=True)
                             continue
                         
                         if topic not in topic_producers:
@@ -194,7 +194,7 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                                 schema_registry_url=schema_registry_url,
                                 schema_proto_class=proto_class,
                                 config=kafka_config.copy(),
-                                key_field=id_field,
+                                key_field=key_field,
                                 auto_create_topic=True
                             )
                         
@@ -241,8 +241,9 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                             break
                     else:
                         topic = entity_config.get("kafka_topic")
-                        id_field = entity_config.get("id_field", f"{entity_type[:-1]}_id")
-                        key = record.get(id_field)
+                        # Use consistent key field priority logic
+                        key_field = correlation_config.get_key_field(entity_type, is_master=False)
+                        key = record.get(key_field)
                         
                         if format == 'json':
                             # Create topic-specific producer if needed
@@ -262,34 +263,37 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                         elif format == 'protobuf':
                             # Create protobuf producer for this entity type if needed
                             if topic not in topic_producers:
-                                # Import the protobuf class for this entity type
+                                # Get protobuf class using dynamic loading
+                                proto_class = None
                                 try:
-                                    from testdatapy.schemas.protobuf import customer_pb2, order_pb2, payment_pb2
+                                    # First try configuration-based loading
+                                    proto_class = get_protobuf_class_for_entity(entity_config, entity_type)
                                     
-                                    # Map entity types to protobuf classes
-                                    proto_classes = {
-                                        'customers': customer_pb2.Customer,
-                                        'orders': order_pb2.Order,
-                                        'payments': payment_pb2.Payment
-                                    }
+                                    # If no config-based class found, try hardcoded mapping fallback
+                                    if proto_class is None:
+                                        proto_class = fallback_to_hardcoded_mapping(entity_type)
                                     
-                                    proto_class = proto_classes.get(entity_type)
-                                    if not proto_class:
-                                        click.echo(f"Warning: No protobuf class for {entity_type}, skipping", err=True)
+                                    if proto_class is None:
+                                        click.echo(f"Warning: No protobuf class found for {entity_type}, skipping", err=True)
                                         continue
-                                    
-                                    topic_producers[topic] = ProtobufProducer(
-                                        bootstrap_servers=servers,
-                                        topic=topic,
-                                        schema_registry_url=schema_registry_url,
-                                        schema_proto_class=proto_class,
-                                        config=kafka_config.copy(),
-                                        key_field=id_field,
-                                        auto_create_topic=True
-                                    )
-                                except ImportError as e:
-                                    click.echo(f"Error importing protobuf schemas: {e}", err=True)
-                                    sys.exit(1)
+                                        
+                                except Exception as e:
+                                    click.echo(f"❌ Error loading protobuf class for {entity_type}: {e}", err=True)
+                                    if hasattr(e, '__class__') and 'ModuleNotFoundError' in str(e.__class__):
+                                        click.echo(f"💡 Hint: Ensure protobuf module is compiled with: protoc --python_out=. your_schema.proto", err=True)
+                                        click.echo(f"💡 Or add 'protobuf_module' and 'protobuf_class' fields to your configuration", err=True)
+                                    click.echo(f"⚠️  Skipping {entity_type}", err=True)
+                                    continue
+                                
+                                topic_producers[topic] = ProtobufProducer(
+                                    bootstrap_servers=servers,
+                                    topic=topic,
+                                    schema_registry_url=schema_registry_url,
+                                    schema_proto_class=proto_class,
+                                    config=kafka_config.copy(),
+                                    key_field=key_field,
+                                    auto_create_topic=True
+                                )
                             
                             topic_producers[topic].produce(record)
                     

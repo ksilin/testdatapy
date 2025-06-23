@@ -87,17 +87,21 @@ class CorrelatedDataGenerator(DataGenerator):
         """Generate a single data record with relationships."""
         record = {}
         
-        # Add ID field (if not referenced from elsewhere)
+        # Add ID field (if not referenced from elsewhere AND not in derived_fields)
         id_field = self.entity_config.get("id_field", f"{self.entity_type[:-1]}_id")
-        if id_field not in self.entity_config.get("relationships", {}):
+        relationships = self.entity_config.get("relationships", {})
+        derived_fields = self.entity_config.get("derived_fields", {})
+        
+        # Only auto-generate if not in relationships AND not in derived_fields
+        if id_field not in relationships and id_field not in derived_fields:
             record[id_field] = str(uuid.uuid4())
         
         # Generate fields from relationships
-        for field_name, rel_config in self.entity_config.get("relationships", {}).items():
+        for field_name, rel_config in relationships.items():
             record[field_name] = self._generate_relationship_value(field_name, rel_config)
         
-        # Generate derived fields
-        for field_name, field_config in self.entity_config.get("derived_fields", {}).items():
+        # Generate derived fields (these take precedence over auto-generation)
+        for field_name, field_config in derived_fields.items():
             record[field_name] = self._generate_derived_field(field_name, field_config, record)
         
         # Track in reference pool for future references

@@ -41,7 +41,7 @@ data:
       orders:
         kafka_topic: "ecommerce-orders"
         id_field: "order_id"
-        rate_per_second: 5
+        rate_per_second: 2
         track_recent: true
         max_messages: 500  # Smaller for testing
         relationships:
@@ -65,8 +65,9 @@ data:
             
       payments:
         kafka_topic: "ecommerce-payments"
-        rate_per_second: 3
+        rate_per_second: 1
         max_messages: 200  # Smaller for testing
+        key_field: "order_id"
         relationships:
           order_id:
             references: "orders.order_id"
