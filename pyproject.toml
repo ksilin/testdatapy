@@ -16,6 +16,10 @@ dependencies = [
     "requests>=2.31.0",
     "protobuf>=4.25.0",
     "PyYAML>=6.0.0",
+    "psutil>=5.9.0",
+    "memory-profiler>=0.60.0",
+    "redis>=4.5.0",
+    "sqlalchemy>=2.0.0",
 ]
 
 [project.optional-dependencies]

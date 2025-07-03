@@ -1,6 +1,7 @@
 """CLI commands for correlated data generation."""
 import click
 import sys
+import time
 from pathlib import Path
 import yaml
 
@@ -10,6 +11,7 @@ from testdatapy.config.correlation_config import CorrelationConfig
 from testdatapy.producers import JsonProducer
 from testdatapy.producers.protobuf_producer import ProtobufProducer
 from testdatapy.schemas.schema_loader import get_protobuf_class_for_entity, fallback_to_hardcoded_mapping
+from testdatapy.performance.benchmark import VehicleBenchmarkSuite, PerformanceMonitor
 
 
 @click.group()
@@ -28,19 +30,54 @@ def correlated():
 @click.option('--format', '-f', type=click.Choice(['json', 'protobuf']), default='json', help='Output format')
 @click.option('--schema-registry-url', '-s', help='Schema Registry URL (required for protobuf)')
 @click.option('--clean-topics', is_flag=True, help='Clean topics before generation')
-def generate(config, bootstrap_servers, producer_config, dry_run, master_only, transaction_only, format, schema_registry_url, clean_topics):
+@click.option('--benchmark', is_flag=True, help='Enable performance benchmarking and detailed monitoring')
+@click.option('--progress-interval', default=1000, help='Progress reporting interval (records)')
+@click.option('--monitor-memory', is_flag=True, help='Enable real-time memory monitoring')
+@click.option('--correlation-report', is_flag=True, help='Generate detailed correlation analysis report')
+@click.option('--benchmark-output', help='Directory to save benchmark results')
+def generate(config, bootstrap_servers, producer_config, dry_run, master_only, transaction_only, format, schema_registry_url, clean_topics, benchmark, progress_interval, monitor_memory, correlation_report, benchmark_output):
     """Generate correlated test data based on configuration."""
     
-    # Load configuration
+    # Load configuration with vehicle validation
     try:
         correlation_config = CorrelationConfig.from_yaml_file(config)
+        
+        # Vehicle enhancement: Run vehicle-specific validation
+        vehicle_validation = correlation_config.get_vehicle_specific_validation()
+        if not vehicle_validation["valid"]:
+            click.echo("❌ Vehicle Configuration validation failed:", err=True)
+            for error in vehicle_validation["errors"]:
+                click.echo(f"   Error: {error}", err=True)
+            sys.exit(1)
+        
+        # Show vehicle validation warnings
+        if vehicle_validation["warnings"]:
+            click.echo("⚠️  Vehicle Configuration warnings:")
+            for warning in vehicle_validation["warnings"]:
+                click.echo(f"   Warning: {warning}")
+    
     except Exception as e:
         click.echo(f"Error loading configuration: {e}", err=True)
         sys.exit(1)
     
-    # Create reference pool
+    # Create reference pool with enhanced monitoring
     ref_pool = ReferencePool()
     ref_pool.enable_stats()
+    
+    # Initialize advanced monitoring if requested
+    performance_monitor = None
+    benchmark_suite = None
+    
+    if benchmark:
+        click.echo("🔧 Benchmark mode enabled - detailed performance monitoring active")
+        benchmark_suite = VehicleBenchmarkSuite()
+        if benchmark_output:
+            Path(benchmark_output).mkdir(parents=True, exist_ok=True)
+            
+    if monitor_memory or benchmark:
+        performance_monitor = PerformanceMonitor()
+        performance_monitor.start_monitoring()
+        click.echo("📊 Real-time memory monitoring enabled")
     
     # Validate protobuf requirements
     if format == 'protobuf' and not schema_registry_url:
@@ -143,10 +180,20 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
         try:
             master_gen.load_all()
             
-            # Show summary
+            # Show loading performance statistics
+            loading_stats = master_gen.get_loading_stats()
+            total_stats = loading_stats.get("_total", {})
+            total_duration = total_stats.get("duration_seconds", 0)
+            total_records = total_stats.get("total_records", 0)
+            
+            click.echo(f"✅ Master data loaded in {total_duration:.2f}s ({total_records} total records)")
+            
+            # Show detailed summary with performance metrics
             for entity_type in correlation_config.config.get("master_data", {}):
                 count = ref_pool.get_type_count(entity_type)
-                click.echo(f"  {entity_type}: {count} records")
+                entity_stats = loading_stats.get(entity_type, {})
+                rps = entity_stats.get("records_per_second", 0)
+                click.echo(f"  {entity_type}: {count} records ({rps:.0f} rec/s)")
                 
                 # Show sample if dry run
                 if dry_run:
@@ -154,10 +201,25 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                     for record in sample:
                         click.echo(f"    {record}")
             
+            # Show memory usage for large datasets
+            memory_usage = master_gen.get_memory_usage()
+            if memory_usage["total_records"] > 10000:  # Only for large datasets
+                click.echo(f"📊 Memory usage: {memory_usage['total_records']} records loaded")
+                for entity_type, usage in memory_usage["entities"].items():
+                    if usage["memory_mb"] > 0:
+                        click.echo(f"   {entity_type}: {usage['memory_mb']:.1f} MB")
+            
             # Produce if not dry run
             if not dry_run:
                 if format == 'json':
-                    master_gen.produce_all()
+                    try:
+                        click.echo("Producing master data to Kafka...")
+                        master_gen.produce_all()
+                        click.echo("Master data production completed")
+                    except Exception as e:
+                        click.echo(f"Error producing master data: {e}", err=True)
+                        import traceback
+                        traceback.print_exc()
                 elif format == 'protobuf':
                     # Produce master data with protobuf using dynamic loading
                     for entity_type, entity_config in correlation_config.config.get("master_data", {}).items():
@@ -231,9 +293,19 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                 if entity_config.get("track_recent", False):
                     ref_pool.enable_recent_tracking(entity_type, window_size=1000)
                 
+                # Initialize monitoring for this entity
+                correlation_count = 0
+                total_count = 0
+                generation_start_time = time.time()
+                
                 count = 0
                 for record in generator.generate():
                     count += 1
+                    total_count += 1
+                    
+                    # Track correlations for detailed reporting
+                    if correlation_report and record.get("appointment_plate") is not None:
+                        correlation_count += 1
                     
                     if dry_run:
                         click.echo(f"    {record}")
@@ -243,7 +315,19 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                         topic = entity_config.get("kafka_topic")
                         # Use consistent key field priority logic
                         key_field = correlation_config.get_key_field(entity_type, is_master=False)
-                        key = record.get(key_field)
+                        
+                        # Check if key field is in key_only_fields first
+                        key_only_fields = record.get("_key_only_fields", {})
+                        if key_field in key_only_fields:
+                            key = key_only_fields[key_field]
+                        else:
+                            key = record.get(key_field)
+                        
+                        # Remove _key_only_fields from the record before producing
+                        if "_key_only_fields" in record:
+                            record_copy = record.copy()
+                            del record_copy["_key_only_fields"]
+                            record = record_copy
                         
                         if format == 'json':
                             # Create topic-specific producer if needed
@@ -297,29 +381,118 @@ def generate(config, bootstrap_servers, producer_config, dry_run, master_only, t
                             
                             topic_producers[topic].produce(record)
                     
-                    # Show progress
-                    if count % 1000 == 0:
-                        click.echo(f"    Generated {count} records...")
+                    # Enhanced progress reporting
+                    if count % progress_interval == 0:
+                        elapsed_time = time.time() - generation_start_time
+                        rate = count / elapsed_time if elapsed_time > 0 else 0
+                        
+                        if correlation_report and total_count > 0:
+                            current_correlation_ratio = correlation_count / total_count
+                            click.echo(f"    Generated {count} records ({rate:.0f} rps, correlation: {current_correlation_ratio:.3f})")
+                        else:
+                            click.echo(f"    Generated {count} records ({rate:.0f} rps)")
+                        
+                        # Memory monitoring update
+                        if performance_monitor:
+                            current_memory = performance_monitor.get_peak_memory()
+                            if current_memory > 0:
+                                click.echo(f"    Memory usage: {current_memory:.1f} MB")
                     
                     # Check if we should stop
                     max_messages = entity_config.get("max_messages")
                     if max_messages and count >= max_messages:
                         break
                 
-                click.echo(f"    Total: {count} {entity_type}")
+                # Entity completion statistics
+                entity_duration = time.time() - generation_start_time
+                entity_rate = count / entity_duration if entity_duration > 0 else 0
+                
+                click.echo(f"    Total: {count} {entity_type} ({entity_rate:.0f} rps)")
+                
+                # Correlation reporting
+                if correlation_report and total_count > 0:
+                    final_correlation_ratio = correlation_count / total_count
+                    click.echo(f"    Correlation ratio: {final_correlation_ratio:.3f} ({correlation_count}/{total_count})")
+                    
+                    # Vehicle requirement validation
+                    target_ratio = 0.25
+                    if abs(final_correlation_ratio - target_ratio) <= 0.05:
+                        click.echo(f"    ✅ Vehicle correlation requirement met (target: {target_ratio})")
+                    else:
+                        click.echo(f"    ⚠️  Vehicle correlation requirement not met (target: {target_ratio}, actual: {final_correlation_ratio:.3f})")
                 
             except Exception as e:
                 click.echo(f"Error generating {entity_type}: {e}", err=True)
                 continue
     
-    # Show statistics
+    # Enhanced statistics and monitoring reports
+    click.echo("\n📊 Generation Statistics:")
+    
+    # Reference pool statistics
     if ref_pool._stats_enabled:
-        click.echo("\nGeneration Statistics:")
         stats = ref_pool.get_stats()
         for ref_type, type_stats in stats.items():
             click.echo(f"  {ref_type}:")
             click.echo(f"    References: {type_stats['reference_count']}")
             click.echo(f"    Accesses: {type_stats['access_count']}")
+    
+    # Memory monitoring results
+    if performance_monitor:
+        performance_monitor.stop_monitoring()
+        peak_memory = performance_monitor.get_peak_memory()
+        avg_cpu = performance_monitor.get_average_cpu()
+        peak_cpu = performance_monitor.get_peak_cpu()
+        
+        click.echo(f"\n💾 Memory & Performance:")
+        click.echo(f"  Peak memory usage: {peak_memory:.1f} MB")
+        if avg_cpu > 0:
+            click.echo(f"  Average CPU usage: {avg_cpu:.1f}%")
+            click.echo(f"  Peak CPU usage: {peak_cpu:.1f}%")
+    
+    # Reference pool optimization metrics
+    if hasattr(ref_pool, 'get_memory_usage'):
+        ref_memory = ref_pool.get_memory_usage()
+        click.echo(f"\n🔗 Reference Pool Metrics:")
+        click.echo(f"  Total references: {ref_memory.get('total_references', 0)}")
+        click.echo(f"  Cached records: {ref_memory.get('total_cached_records', 0)}")
+        click.echo(f"  Index entries: {ref_memory.get('total_indices', 0)}")
+        if ref_memory.get('memory_estimate_mb', 0) > 0:
+            click.echo(f"  Estimated memory: {ref_memory['memory_estimate_mb']} MB")
+    
+    # Benchmark results
+    if benchmark:
+        try:
+            click.echo(f"\n⚡ Running benchmark analysis...")
+            metrics = benchmark_suite.benchmark_vehicle_scenario(
+                config_file=config,
+                test_name="CLI_Benchmark",
+                enable_monitoring=False  # Already monitored above
+            )
+            
+            click.echo(f"📈 Benchmark Results:")
+            click.echo(f"  Total records: {metrics.records_generated}")
+            click.echo(f"  Throughput: {metrics.records_per_second:.0f} records/sec")
+            click.echo(f"  Duration: {metrics.duration_seconds:.1f} seconds")
+            click.echo(f"  Correlation ratio: {metrics.correlation_ratio:.3f}")
+            
+            # Vehicle requirements validation
+            validation = benchmark_suite.validate_vehicle_requirements(metrics)
+            click.echo(f"\n🎯 Vehicle Requirements Validation:")
+            for req, passed in validation.items():
+                status = "✅" if passed else "❌"
+                click.echo(f"  {status} {req.replace('_', ' ').title()}: {'PASS' if passed else 'FAIL'}")
+            
+            # Save benchmark results if output directory specified
+            if benchmark_output:
+                import json
+                report = benchmark_suite.generate_performance_report()
+                report_file = Path(benchmark_output) / f"cli_benchmark_{int(time.time())}.json"
+                with open(report_file, 'w') as f:
+                    json.dump(report, f, indent=2)
+                click.echo(f"\n📁 Benchmark report saved: {report_file}")
+                
+        except Exception as e:
+            click.echo(f"⚠️  Benchmark analysis failed: {e}")
     
     if not dry_run:
         # Flush all producers
@@ -497,4 +670,108 @@ def validate(config_file):
         
     except Exception as e:
         click.echo(f"❌ Configuration invalid: {e}", err=True)
+        sys.exit(1)
+
+
+@correlated.command()
+@click.option('--config', '-c', required=True, help='Path to correlation config YAML file')
+@click.option('--output-dir', '-o', default='./benchmark_results', help='Output directory for benchmark results')
+@click.option('--scale-factors', default='1000,5000,10000', help='Comma-separated scale factors for testing')
+@click.option('--test-name', default='BMW_Benchmark', help='Name for the benchmark test')
+def benchmark(config, output_dir, scale_factors, test_name):
+    """Run comprehensive BMW performance benchmarks."""
+    
+    click.echo("🚀 Starting BMW Performance Benchmark Suite...")
+    
+    try:
+        # Parse scale factors
+        scales = [int(s.strip()) for s in scale_factors.split(',')]
+        
+        # Initialize benchmark suite
+        from testdatapy.performance.benchmark import run_vehicle_benchmark_suite
+        
+        # Create output directory
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Run comprehensive benchmark
+        run_vehicle_benchmark_suite(
+            config_file=config,
+            output_dir=output_dir
+        )
+        
+        click.echo(f"\n✅ Benchmark suite completed!")
+        click.echo(f"📁 Results saved to: {output_dir}")
+        
+    except Exception as e:
+        click.echo(f"❌ Benchmark failed: {e}", err=True)
+        sys.exit(1)
+
+
+@correlated.command()
+@click.option('--config', '-c', required=True, help='Path to correlation config YAML file')
+@click.option('--entity-type', '-e', help='Specific entity type to analyze')
+@click.option('--sample-size', default=1000, help='Sample size for correlation analysis')
+def analyze_correlation(config, entity_type, sample_size):
+    """Analyze correlation patterns in BMW scenario data."""
+    
+    click.echo("🔍 Analyzing BMW correlation patterns...")
+    
+    try:
+        # Load configuration
+        correlation_config = CorrelationConfig.from_yaml_file(config)
+        
+        # Initialize components
+        ref_pool = ReferencePool()
+        ref_pool.enable_stats()
+        
+        # Load master data
+        click.echo("Loading master data...")
+        master_gen = MasterDataGenerator(
+            config=correlation_config,
+            reference_pool=ref_pool
+        )
+        master_gen.load_all()
+        
+        # Analyze correlations
+        if entity_type:
+            entities_to_analyze = [entity_type]
+        else:
+            entities_to_analyze = list(correlation_config.config.get("transactional_data", {}).keys())
+        
+        for entity in entities_to_analyze:
+            click.echo(f"\n📊 Analyzing {entity}...")
+            
+            generator = CorrelatedDataGenerator(
+                entity_type=entity,
+                config=correlation_config,
+                reference_pool=ref_pool,
+                max_messages=sample_size
+            )
+            
+            correlation_count = 0
+            total_count = 0
+            
+            for record in generator.generate():
+                total_count += 1
+                if record.get("appointment_plate") is not None:
+                    correlation_count += 1
+            
+            if total_count > 0:
+                correlation_ratio = correlation_count / total_count
+                click.echo(f"  Correlation ratio: {correlation_ratio:.3f} ({correlation_count}/{total_count})")
+                
+                # BMW requirement check
+                target = 0.25
+                deviation = abs(correlation_ratio - target)
+                if deviation <= 0.05:
+                    click.echo(f"  ✅ BMW requirement met (±5% tolerance)")
+                else:
+                    click.echo(f"  ⚠️  Deviation from target: {deviation:.3f}")
+            else:
+                click.echo(f"  ❌ No records generated")
+        
+        click.echo(f"\n✅ Correlation analysis complete!")
+        
+    except Exception as e:
+        click.echo(f"❌ Analysis failed: {e}", err=True)
         sys.exit(1)

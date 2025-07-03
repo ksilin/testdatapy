@@ -14,6 +14,286 @@ from testdatapy.schema_evolution import SchemaEvolutionManager
 from testdatapy.shutdown import GracefulProducer, create_shutdown_handler
 
 
+def _load_protobuf_class(
+    proto_class: str | None,
+    proto_module: str | None,
+    proto_file: str | None,
+    schema_paths: tuple[str, ...],
+):
+    """Load protobuf message class using various methods."""
+    import sys
+    from pathlib import Path
+    import tempfile
+    import subprocess
+    import importlib.util
+    import time
+    
+    from testdatapy.exceptions import (
+        ProtobufClassNotFoundError,
+        ProtobufImportError,
+        ProtobufCompilerNotFoundError,
+        SchemaCompilationError,
+        SchemaNotFoundError
+    )
+    from testdatapy.logging_config import get_schema_logger, PerformanceTimer
+    
+    logger = get_schema_logger(__name__)
+    start_time = time.time()
+    
+    if proto_class:
+        # Method 1: Direct class import (e.g., 'customer_pb2.Customer')
+        try:
+            with PerformanceTimer(logger, "protobuf_class_import", proto_class=proto_class):
+                module_name, class_name = proto_class.rsplit('.', 1)
+                module = __import__(module_name, fromlist=[class_name])
+                loaded_class = getattr(module, class_name)
+                
+                # Verify it's a protobuf class
+                if not (hasattr(loaded_class, 'DESCRIPTOR') and callable(loaded_class)):
+                    raise ProtobufClassNotFoundError(
+                        class_spec=proto_class,
+                        module_name=module_name
+                    )
+                
+                logger.log_schema_loading(
+                    schema_spec=proto_class,
+                    method="class",
+                    success=True,
+                    duration=time.time() - start_time,
+                    class_name=loaded_class.__name__
+                )
+                
+                return loaded_class
+                
+        except (ImportError, AttributeError, ValueError) as e:
+            logger.log_schema_loading(
+                schema_spec=proto_class,
+                method="class",
+                success=False,
+                duration=time.time() - start_time,
+                error=str(e)
+            )
+            
+            if isinstance(e, ImportError):
+                raise ProtobufImportError(
+                    module_name=module_name,
+                    import_error=e,
+                    search_paths=list(schema_paths) if schema_paths else None
+                )
+            else:
+                raise ProtobufClassNotFoundError(
+                    class_spec=proto_class,
+                    module_name=module_name
+                )
+    
+    elif proto_module:
+        # Method 2: Module-based loading (e.g., 'customer_pb2')
+        try:
+            # Add schema paths to sys.path temporarily
+            original_path = sys.path.copy()
+            for path in schema_paths:
+                if path not in sys.path:
+                    sys.path.insert(0, path)
+            
+            try:
+                with PerformanceTimer(logger, "protobuf_module_import", proto_module=proto_module):
+                    module = __import__(proto_module)
+                    
+                    # Look for a protobuf message class in the module
+                    protobuf_classes = []
+                    for attr_name in dir(module):
+                        attr = getattr(module, attr_name)
+                        if (hasattr(attr, 'DESCRIPTOR') and 
+                            hasattr(attr.DESCRIPTOR, 'full_name') and
+                            callable(attr)):
+                            protobuf_classes.append(attr)
+                    
+                    if not protobuf_classes:
+                        raise ProtobufClassNotFoundError(
+                            class_spec=proto_module,
+                            module_name=proto_module,
+                            search_paths=list(schema_paths) if schema_paths else None
+                        )
+                    
+                    # Return the first protobuf class found
+                    loaded_class = protobuf_classes[0]
+                    
+                    logger.log_schema_loading(
+                        schema_spec=proto_module,
+                        method="module",
+                        success=True,
+                        duration=time.time() - start_time,
+                        class_name=loaded_class.__name__
+                    )
+                    
+                    if len(protobuf_classes) > 1:
+                        logger.warning(f"Multiple protobuf classes found in module '{proto_module}', using '{loaded_class.__name__}'")
+                    
+                    return loaded_class
+                    
+            finally:
+                sys.path = original_path
+                
+        except ImportError as e:
+            logger.log_schema_loading(
+                schema_spec=proto_module,
+                method="module",
+                success=False,
+                duration=time.time() - start_time,
+                error=str(e)
+            )
+            
+            raise ProtobufImportError(
+                module_name=proto_module,
+                import_error=e,
+                search_paths=list(schema_paths) if schema_paths else None
+            )
+    
+    elif proto_file:
+        # Method 3: Compile .proto file and load dynamically
+        proto_path = Path(proto_file)
+        
+        if not proto_path.exists():
+            raise SchemaNotFoundError(
+                schema_path=str(proto_path),
+                schema_type="protobuf schema",
+                search_paths=list(schema_paths) if schema_paths else None
+            )
+        
+        try:
+            # Create temporary directory for compilation
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Compile the .proto file
+                cmd = [
+                    'protoc',
+                    f'--python_out={temp_dir}',
+                    f'--proto_path={proto_path.parent}',
+                ]
+                
+                # Add custom schema paths
+                for path in schema_paths:
+                    cmd.extend([f'--proto_path={path}'])
+                
+                cmd.append(str(proto_path))
+                
+                logger.debug(f"Compiling protobuf schema with command: {' '.join(cmd)}")
+                
+                try:
+                    with PerformanceTimer(logger, "protobuf_compilation", proto_file=str(proto_path)):
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        
+                    if result.returncode != 0:
+                        logger.log_schema_compilation(
+                            schema_path=str(proto_path),
+                            compiler="protoc",
+                            success=False,
+                            duration=time.time() - start_time,
+                            error=result.stderr
+                        )
+                        
+                        raise SchemaCompilationError(
+                            schema_path=str(proto_path),
+                            compilation_error=result.stderr,
+                            compiler_output=result.stdout
+                        )
+                    
+                    logger.log_schema_compilation(
+                        schema_path=str(proto_path),
+                        compiler="protoc",
+                        success=True,
+                        duration=time.time() - start_time,
+                        output=result.stdout
+                    )
+                    
+                except FileNotFoundError:
+                    raise ProtobufCompilerNotFoundError()
+                
+                # Load the compiled module
+                module_name = proto_path.stem + '_pb2'
+                module_path = Path(temp_dir) / f'{module_name}.py'
+                
+                if not module_path.exists():
+                    raise SchemaCompilationError(
+                        schema_path=str(proto_path),
+                        compilation_error=f"Compilation did not produce expected file: {module_path}"
+                    )
+                
+                # Load module dynamically
+                try:
+                    with PerformanceTimer(logger, "protobuf_module_loading", module_path=str(module_path)):
+                        spec = importlib.util.spec_from_file_location(module_name, module_path)
+                        if spec is None or spec.loader is None:
+                            raise SchemaCompilationError(
+                                schema_path=str(proto_path),
+                                compilation_error=f"Failed to create module spec for {module_path}"
+                            )
+                        
+                        module = importlib.util.module_from_spec(spec)
+                        sys.modules[module_name] = module
+                        spec.loader.exec_module(module)
+                        
+                        # Find the message class
+                        protobuf_classes = []
+                        for attr_name in dir(module):
+                            attr = getattr(module, attr_name)
+                            if (hasattr(attr, 'DESCRIPTOR') and 
+                                hasattr(attr.DESCRIPTOR, 'full_name') and
+                                callable(attr)):
+                                protobuf_classes.append(attr)
+                        
+                        if not protobuf_classes:
+                            raise SchemaCompilationError(
+                                schema_path=str(proto_path),
+                                compilation_error=f"No protobuf message class found in compiled {proto_file}"
+                            )
+                        
+                        # Return the first protobuf class found
+                        loaded_class = protobuf_classes[0]
+                        
+                        logger.log_schema_loading(
+                            schema_spec=str(proto_path),
+                            method="file",
+                            success=True,
+                            duration=time.time() - start_time,
+                            class_name=loaded_class.__name__
+                        )
+                        
+                        return loaded_class
+                        
+                except Exception as e:
+                    logger.log_schema_loading(
+                        schema_spec=str(proto_path),
+                        method="file",
+                        success=False,
+                        duration=time.time() - start_time,
+                        error=str(e)
+                    )
+                    
+                    raise SchemaCompilationError(
+                        schema_path=str(proto_path),
+                        compilation_error=f"Failed to load compiled module: {e}"
+                    )
+                
+        except Exception as e:
+            if not isinstance(e, (SchemaCompilationError, ProtobufCompilerNotFoundError, SchemaNotFoundError)):
+                logger.log_schema_loading(
+                    schema_spec=str(proto_path),
+                    method="file", 
+                    success=False,
+                    duration=time.time() - start_time,
+                    error=str(e)
+                )
+                
+                raise SchemaCompilationError(
+                    schema_path=str(proto_path),
+                    compilation_error=str(e)
+                )
+            raise
+    
+    else:
+        raise click.UsageError("No protobuf class specification provided")
+
+
 @click.group()
 @click.version_option()
 def cli():
@@ -45,7 +325,10 @@ def cli():
 )
 @click.option("--schema-file", type=click.Path(exists=True), help="Avro schema file")
 @click.option("--proto-file", type=click.Path(exists=True), help="Protobuf schema file (.proto)")
+@click.option("--proto-module", help="Pre-compiled protobuf module name (e.g., 'customer_pb2')")
 @click.option("--proto-class", help="Fully qualified protobuf message class name (e.g., 'mypackage.Customer')")
+@click.option("--schema-path", multiple=True, help="Custom schema directory paths (can be used multiple times)")
+@click.option("--auto-register/--no-auto-register", default=False, help="Automatically register protobuf schemas with Schema Registry")
 @click.option("--csv-file", type=click.Path(exists=True), help="CSV file for csv generator")
 @click.option("--key-field", help="Field to use as message key")
 @click.option("--rate", type=float, help="Messages per second")
@@ -67,7 +350,10 @@ def produce(
     generator: str,
     schema_file: str | None,
     proto_file: str | None,
+    proto_module: str | None,
     proto_class: str | None,
+    schema_path: tuple[str, ...],
+    auto_register: bool,
     csv_file: str | None,
     key_field: str | None,
     rate: float,
@@ -122,8 +408,18 @@ def produce(
     if generator == "faker":
         if format == "avro" and not schema_file:
             raise click.UsageError("Avro format requires --schema-file")
-        if format == "protobuf" and not proto_class:
-            raise click.UsageError("Protobuf format requires --proto-class")
+        if format == "protobuf":
+            # Validate protobuf options - need at least one specification method
+            if not proto_class and not proto_module and not proto_file:
+                raise click.UsageError(
+                    "Protobuf format requires one of: --proto-class, --proto-module, or --proto-file"
+                )
+            # Only allow one primary method at a time
+            methods_count = sum([bool(proto_class), bool(proto_module), bool(proto_file)])
+            if methods_count > 1:
+                raise click.UsageError(
+                    "Can only specify one of: --proto-class, --proto-module, or --proto-file"
+                )
 
         data_generator = FakerGenerator(
             rate_per_second=app_config.producer.rate_per_second,
@@ -178,13 +474,13 @@ def produce(
                 topic_config=topic_config,
             )
         elif format == "protobuf":
-            if not proto_class:
-                raise click.UsageError("Protobuf format requires --proto-class")
-            
-            # Import the protobuf class dynamically
-            module_name, class_name = proto_class.rsplit('.', 1)
-            module = __import__(module_name, fromlist=[class_name])
-            proto_message_class = getattr(module, class_name)
+            # Dynamically load protobuf class
+            proto_message_class = _load_protobuf_class(
+                proto_class=proto_class,
+                proto_module=proto_module,
+                proto_file=proto_file,
+                schema_paths=schema_path,
+            )
             
             sr_config = app_config.to_schema_registry_config()
             producer = ProtobufProducer(
@@ -199,6 +495,15 @@ def produce(
                 auto_create_topic=auto_create_topic,
                 topic_config=topic_config,
             )
+            
+            # Auto-register schema if requested
+            if auto_register and proto_file:
+                try:
+                    subject = f"{topic}-value"
+                    schema_id = producer.register_schema(subject)
+                    click.echo(f"Registered protobuf schema with ID: {schema_id}")
+                except Exception as e:
+                    click.echo(f"Warning: Failed to register schema: {e}", err=True)
         else:
             raise click.BadParameter(f"Unknown format: {format}")
         
@@ -229,7 +534,7 @@ def produce(
             with open(schema_file) as f:
                 schema = json.load(f)
             data_iterator = data_generator.generate_generic(schema)
-        elif generator == "faker" and format == "protobuf" and proto_class:
+        elif generator == "faker" and format == "protobuf" and (proto_class or proto_module or proto_file):
             # For protobuf, we'll use generic generation with field mapping
             # The protobuf producer will handle conversion
             data_iterator = data_generator.generate()
@@ -490,6 +795,18 @@ def list_formats():
 # Import and add correlated commands
 from testdatapy.cli_correlated import correlated
 cli.add_command(correlated)
+
+# Add proto schema management commands
+from testdatapy.cli_proto import proto
+cli.add_command(proto)
+
+# Add cache and version management commands
+from testdatapy.cli_cache import cache
+cli.add_command(cache)
+
+# Add batch operations commands
+from testdatapy.cli_batch import batch
+cli.add_command(batch)
 
 
 def main():

@@ -1,6 +1,7 @@
 """Protobuf producer implementation with Schema Registry support."""
 import json
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -15,8 +16,18 @@ from confluent_kafka.serialization import (
 )
 
 from testdatapy.producers.base import KafkaProducer
+from testdatapy.exceptions import (
+    ProtobufSerializationError,
+    SchemaRegistryConnectionError,
+    SchemaRegistrationError,
+    ProducerConnectionError,
+    MessageProductionError,
+    handle_and_reraise
+)
+from testdatapy.schema.exceptions import SchemaNotFoundError
+from testdatapy.logging_config import get_schema_logger, PerformanceTimer
 
-logger = logging.getLogger(__name__)
+logger = get_schema_logger(__name__)
 
 
 class ProtobufProducer(KafkaProducer):
@@ -62,11 +73,22 @@ class ProtobufProducer(KafkaProducer):
         self.schema_file_path = Path(schema_file_path) if schema_file_path else None
         self.key_field = key_field
         
-        # Set up Schema Registry client
+        # Set up Schema Registry client with error handling
         sr_config = schema_registry_config or {}
         if "url" not in sr_config:
             sr_config["url"] = schema_registry_url
-        self.schema_registry = SchemaRegistryClient(sr_config)
+        
+        try:
+            with PerformanceTimer(logger, "schema_registry_connection", url=schema_registry_url):
+                self.schema_registry = SchemaRegistryClient(sr_config)
+                # Test connection
+                self.schema_registry.get_subjects()
+                logger.info("Connected to Schema Registry", url=schema_registry_url)
+        except Exception as e:
+            raise SchemaRegistryConnectionError(
+                registry_url=schema_registry_url,
+                connection_error=e
+            ) from e
         
         # Set up serializers
         self._key_serializer = StringSerializer("utf-8")
@@ -76,12 +98,20 @@ class ProtobufProducer(KafkaProducer):
             {"use.deprecated.format": False}
         )
         
-        # Merge configurations
+        # Set up Kafka producer with error handling
         producer_config = {"bootstrap.servers": bootstrap_servers}
         if config:
             producer_config.update(config)
         
-        self._producer = ConfluentProducer(producer_config)
+        try:
+            with PerformanceTimer(logger, "kafka_producer_connection", bootstrap_servers=bootstrap_servers):
+                self._producer = ConfluentProducer(producer_config)
+                logger.info("Created Kafka producer", bootstrap_servers=bootstrap_servers)
+        except Exception as e:
+            raise ProducerConnectionError(
+                bootstrap_servers=bootstrap_servers,
+                connection_error=e
+            ) from e
         
         logger.info(
             f"Initialized Protobuf producer for topic '{topic}' "
@@ -101,35 +131,89 @@ class ProtobufProducer(KafkaProducer):
             key: Optional message key (overrides key_field)
             on_delivery: Optional callback for delivery reports
         """
-        # Determine key
-        if key is None and self.key_field and self.key_field in value:
-            key = str(value[self.key_field])
+        start_time = time.time()
         
-        # Serialize key
-        serialized_key = self._key_serializer(key) if key else None
-        
-        # Convert dict to protobuf message
-        protobuf_message = self._dict_to_protobuf(value)
-        
-        # Create serialization context
-        ctx = SerializationContext(self.topic, MessageField.VALUE)
-        
-        # Serialize value
-        serialized_value = self._value_serializer(protobuf_message, ctx)
-        
-        # Use provided callback or default
-        callback = on_delivery or self._delivery_callback
-        
-        # Produce message
-        self._producer.produce(
-            topic=self.topic,
-            key=serialized_key,
-            value=serialized_value,
-            on_delivery=callback
-        )
-        
-        # Trigger any callbacks
-        self._producer.poll(0)
+        try:
+            # Determine key
+            if key is None and self.key_field and self.key_field in value:
+                key = str(value[self.key_field])
+            
+            # Serialize key
+            serialized_key = self._key_serializer(key) if key else None
+            
+            # Convert dict to protobuf message with error handling
+            try:
+                protobuf_message = self._dict_to_protobuf(value)
+                logger.debug("Converted data to protobuf message", 
+                           message_type=self.schema_proto_class.__name__,
+                           data_fields=list(value.keys()))
+            except Exception as e:
+                raise ProtobufSerializationError(
+                    data=value,
+                    proto_class=self.schema_proto_class,
+                    serialization_error=e
+                ) from e
+            
+            # Create serialization context
+            ctx = SerializationContext(self.topic, MessageField.VALUE)
+            
+            # Serialize value with error handling
+            try:
+                serialized_value = self._value_serializer(protobuf_message, ctx)
+                message_size = len(serialized_value) if serialized_value else 0
+                logger.debug("Serialized protobuf message", 
+                           size_bytes=message_size,
+                           topic=self.topic)
+            except Exception as e:
+                raise ProtobufSerializationError(
+                    data=value,
+                    proto_class=self.schema_proto_class,
+                    serialization_error=e
+                ) from e
+            
+            # Use provided callback or default
+            callback = on_delivery or self._delivery_callback
+            
+            # Produce message with error handling
+            try:
+                self._producer.produce(
+                    topic=self.topic,
+                    key=serialized_key,
+                    value=serialized_value,
+                    on_delivery=callback
+                )
+                
+                # Trigger any callbacks
+                self._producer.poll(0)
+                
+                # Log successful production
+                duration = time.time() - start_time
+                logger.log_message_production(
+                    topic=self.topic,
+                    message_format="protobuf",
+                    success=True,
+                    duration=duration,
+                    message_size=message_size
+                )
+                
+            except Exception as e:
+                raise MessageProductionError(
+                    topic=self.topic,
+                    message_data=value,
+                    production_error=e
+                ) from e
+                
+        except Exception as e:
+            # Log failed production
+            duration = time.time() - start_time
+            logger.log_message_production(
+                topic=self.topic,
+                message_format="protobuf",
+                success=False,
+                duration=duration,
+                error=str(e)
+            )
+            raise
 
     def _dict_to_protobuf(self, data: dict[str, Any]) -> Any:
         """Convert dictionary to protobuf message.
@@ -148,19 +232,36 @@ class ProtobufProducer(KafkaProducer):
             'address': ['street', 'city', 'postal_code', 'country_code']
         }
         
-        # Handle nested message structures
+        # Handle nested message structures first
         for nested_field, field_names in nested_mappings.items():
-            if hasattr(message, nested_field) and any(field in data for field in field_names):
-                nested_message = getattr(message, nested_field)
-                for field_name in field_names:
-                    if field_name in data:
-                        setattr(nested_message, field_name, data[field_name])
+            if hasattr(message, nested_field):
+                # Check if we have an address dict or individual address fields
+                if nested_field in data and isinstance(data[nested_field], dict):
+                    # Handle address as a nested dict
+                    nested_message = getattr(message, nested_field)
+                    address_data = data[nested_field]
+                    for field_name in field_names:
+                        if field_name in address_data:
+                            setattr(nested_message, field_name, address_data[field_name])
+                elif any(field in data for field in field_names):
+                    # Handle individual address fields at the top level
+                    nested_message = getattr(message, nested_field)
+                    for field_name in field_names:
+                        if field_name in data:
+                            setattr(nested_message, field_name, data[field_name])
         
         # Set all other fields directly on the message
         nested_field_names = {field for fields in nested_mappings.values() for field in fields}
+        nested_field_names.update(nested_mappings.keys())  # Also exclude the nested field itself
+        
         for field, value in data.items():
             if field not in nested_field_names and hasattr(message, field):
-                setattr(message, field, value)
+                try:
+                    setattr(message, field, value)
+                except AttributeError as e:
+                    # Some protobuf fields may not be assignable, log and skip
+                    logger.debug(f"Cannot assign field {field}: {e}")
+                    continue
         
         return message
 
@@ -173,22 +274,83 @@ class ProtobufProducer(KafkaProducer):
         Returns:
             Schema ID
         """
-        if not self.schema_file_path or not self.schema_file_path.exists():
-            logger.warning("No schema file path provided for registration")
-            return -1
+        start_time = time.time()
         
-        # Read schema from file
-        with open(self.schema_file_path) as f:
-            schema_str = f.read()
-        
-        # Register schema
-        schema_id = self.schema_registry.register_schema(
-            subject,
-            {"schemaType": "PROTOBUF", "schema": schema_str}
-        )
-        
-        logger.info(f"Registered protobuf schema for subject '{subject}' with ID {schema_id}")
-        return schema_id
+        try:
+            if not self.schema_file_path or not self.schema_file_path.exists():
+                logger.warning("No schema file path provided for registration", 
+                             subject=subject,
+                             schema_file_path=str(self.schema_file_path) if self.schema_file_path else None)
+                return -1
+            
+            # Read schema from file with error handling
+            try:
+                with open(self.schema_file_path) as f:
+                    schema_str = f.read()
+                logger.debug("Read schema file", 
+                           schema_file=str(self.schema_file_path),
+                           schema_size=len(schema_str))
+            except Exception as e:
+                handle_and_reraise(
+                    original_error=e,
+                    error_context=f"reading schema file {self.schema_file_path}",
+                    suggestions=[
+                        f"Verify file exists and is readable: {self.schema_file_path}",
+                        "Check file permissions"
+                    ]
+                )
+            
+            # Create proper Schema object
+            from confluent_kafka.schema_registry import Schema
+            schema = Schema(schema_str, schema_type="PROTOBUF")
+            
+            # Register schema with error handling
+            try:
+                with PerformanceTimer(logger, "schema_registration", subject=subject):
+                    schema_id = self.schema_registry.register_schema(subject, schema)
+                
+                # Log successful registration
+                duration = time.time() - start_time
+                logger.log_schema_registry_operation(
+                    operation="register",
+                    subject=subject,
+                    success=True,
+                    duration=duration,
+                    schema_id=schema_id
+                )
+                
+                logger.info(f"Registered protobuf schema for subject '{subject}' with ID {schema_id}")
+                return schema_id
+                
+            except Exception as e:
+                duration = time.time() - start_time
+                logger.log_schema_registry_operation(
+                    operation="register",
+                    subject=subject,
+                    success=False,
+                    duration=duration,
+                    error=str(e)
+                )
+                
+                raise SchemaRegistrationError(
+                    subject=subject,
+                    schema_content=schema_str[:200] + "..." if len(schema_str) > 200 else schema_str,
+                    registration_error=e
+                ) from e
+                
+        except Exception as e:
+            if not isinstance(e, (SchemaRegistrationError, SchemaNotFoundError)):
+                # Re-raise as appropriate exception if not already handled
+                handle_and_reraise(
+                    original_error=e,
+                    error_context=f"schema registration for subject {subject}",
+                    suggestions=[
+                        "Verify Schema Registry is accessible",
+                        "Check authentication and permissions",
+                        "Validate schema format and content"
+                    ]
+                )
+            raise
 
     def get_latest_schema(self, subject: str) -> str:
         """Get the latest schema for a subject.
@@ -199,8 +361,46 @@ class ProtobufProducer(KafkaProducer):
         Returns:
             Schema string
         """
-        version = self.schema_registry.get_latest_version(subject)
-        return version.schema.schema
+        start_time = time.time()
+        
+        try:
+            with PerformanceTimer(logger, "get_latest_schema", subject=subject):
+                version = self.schema_registry.get_latest_version(subject)
+                schema_str = version.schema.schema_str
+                
+            # Log successful retrieval
+            duration = time.time() - start_time
+            logger.log_schema_registry_operation(
+                operation="get",
+                subject=subject,
+                success=True,
+                duration=duration
+            )
+            
+            logger.debug("Retrieved latest schema", 
+                       subject=subject,
+                       schema_size=len(schema_str))
+            return schema_str
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.log_schema_registry_operation(
+                operation="get",
+                subject=subject,
+                success=False,
+                duration=duration,
+                error=str(e)
+            )
+            
+            handle_and_reraise(
+                original_error=e,
+                error_context=f"retrieving latest schema for subject {subject}",
+                suggestions=[
+                    f"Verify subject '{subject}' exists in Schema Registry",
+                    "Check Schema Registry connectivity",
+                    "Verify authentication and permissions"
+                ]
+            )
 
     def _delivery_callback(self, err, msg):
         """Default delivery callback.

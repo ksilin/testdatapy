@@ -24,6 +24,9 @@ class ReferencePool:
             "reference_count": 0,
             "last_access": None
         })
+        
+        self._indices: Dict[str, Dict[str, str]] = {}  # field_value -> reference_id
+        self._record_cache: Dict[str, Dict[str, Any]] = {} 
     
     def is_empty(self) -> bool:
         """Check if the pool is empty."""
@@ -248,3 +251,105 @@ class ReferencePool:
         """Get usage statistics."""
         with self._lock:
             return dict(self._stats)
+    
+    def add_field_index(self, ref_type: str, field_path: str, record_id: str, field_value: str) -> None:
+        """Add field index for fast lookups by field value."""
+        with self._lock:
+            index_key = f"{ref_type}.{field_path}"
+            if index_key not in self._indices:
+                self._indices[index_key] = {}
+            self._indices[index_key][str(field_value)] = record_id
+    
+    def find_by_field_value(self, ref_type: str, field_path: str, field_value: str) -> Optional[str]:
+        """Find reference ID by field value using index."""
+        with self._lock:
+            index_key = f"{ref_type}.{field_path}"
+            if index_key in self._indices:
+                return self._indices[index_key].get(str(field_value))
+            return None
+    
+    def get_random_batch(self, ref_type: str, count: int, avoid_recent: bool = False) -> List[str]:
+        """Get batch of random references for better performance."""
+        with self._lock:
+            if ref_type not in self._references or not self._references[ref_type]:
+                return []
+            
+            available = self._references[ref_type].copy()
+            
+            # Optionally avoid recent items to ensure variety
+            if avoid_recent and ref_type in self._recent_items:
+                recent = list(self._recent_items[ref_type])
+                available = [ref for ref in available if ref not in recent]
+            
+            if not available:
+                available = self._references[ref_type]
+            
+            sample_size = min(count, len(available))
+            return random.sample(available, sample_size)
+    
+    def get_nested_field_value(self, ref_type: str, ref_id: str, field_path: str) -> Any:
+        """Get nested field value from cached record."""
+        with self._lock:
+            if (ref_type in self._record_cache and 
+                ref_id in self._record_cache[ref_type]):
+                record = self._record_cache[ref_type][ref_id]
+                return self._traverse_field_path(record, field_path)
+            return None
+    
+    def _traverse_field_path(self, record: Dict[str, Any], field_path: str) -> Any:
+        """Traverse nested field path in record."""
+        parts = field_path.split(".")
+        current = record
+        
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        
+        return current
+    
+    # TODO - this is far too specialized to be useful - remove or generalize
+    def build_indices_for_entity(self, ref_type: str) -> None:
+        """Build all indices for an entity type after bulk loading."""
+        with self._lock:
+            if ref_type not in self._record_cache:
+                return
+            
+            # Common fields to index
+            common_fields = [
+                "full.Vehicle.cLicenseNr",
+                "full.Vehicle.cLicenseNrCleaned", 
+                "full.Customer.cKeyCustomer",
+                "full.Job.cKeyJob",
+                "jobid"
+            ]
+            
+            for record_id, record in self._record_cache[ref_type].items():
+                for field_path in common_fields:
+                    field_value = self._traverse_field_path(record, field_path)
+                    if field_value is not None:
+                        self.add_field_index(ref_type, field_path, record_id, str(field_value))
+    
+    def get_memory_usage(self) -> Dict[str, int]:
+        """Get memory usage statistics for optimization monitoring."""
+        with self._lock:
+            import sys
+            
+            usage = {
+                "total_references": sum(len(refs) for refs in self._references.values()),
+                "total_cached_records": sum(len(cache) for cache in self._record_cache.values()),
+                "total_indices": sum(len(index) for index in self._indices.values()),
+                "memory_estimate_mb": 0
+            }
+            
+            # Rough memory estimation
+            try:
+                refs_size = sys.getsizeof(self._references)
+                cache_size = sys.getsizeof(self._record_cache) 
+                indices_size = sys.getsizeof(self._indices)
+                usage["memory_estimate_mb"] = (refs_size + cache_size + indices_size) // (1024 * 1024)
+            except:
+                usage["memory_estimate_mb"] = -1  # Could not estimate
+            
+            return usage

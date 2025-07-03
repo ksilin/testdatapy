@@ -1,8 +1,9 @@
 """Configuration loader for test data generation."""
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,6 +56,37 @@ class GeneratorConfig(BaseModel):
     key_field: str | None = None
 
 
+class ProtobufConfig(BaseModel):
+    """Protobuf configuration."""
+
+    schema_paths: List[str] = Field(default_factory=list)
+    auto_compile: bool = Field(default=False)
+    temp_compilation: bool = Field(default=True)
+    validate_dependencies: bool = Field(default=False)
+    protoc_path: Optional[str] = None
+    timeout: int = Field(default=60, gt=0)
+
+    @field_validator('schema_paths')
+    @classmethod
+    def validate_schema_paths(cls, v):
+        """Validate that schema paths exist and are accessible."""
+        for path in v:
+            path_obj = Path(path)
+            if not path_obj.exists():
+                raise ValueError(f"Schema path does not exist: {path}")
+            if not path_obj.is_dir():
+                raise ValueError(f"Schema path is not a directory: {path}")
+        return v
+
+    @field_validator('timeout')
+    @classmethod
+    def validate_timeout(cls, v):
+        """Validate timeout is positive."""
+        if v <= 0:
+            raise ValueError("Timeout must be positive")
+        return v
+
+
 class AppConfig(BaseSettings):
     """Application configuration."""
 
@@ -62,12 +94,14 @@ class AppConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        env_prefix="TESTDATAPY_",
     )
 
     kafka: KafkaConfig = Field(default_factory=KafkaConfig)
     schema_registry: SchemaRegistryConfig = Field(default_factory=SchemaRegistryConfig)
     producer: ProducerConfig = Field(default_factory=ProducerConfig)
     generator: GeneratorConfig = Field(default_factory=GeneratorConfig)
+    protobuf: ProtobufConfig = Field(default_factory=ProtobufConfig)
 
     @classmethod
     def from_file(cls, config_file: str) -> "AppConfig":
@@ -87,6 +121,7 @@ class AppConfig(BaseSettings):
         schema_registry_config = {}
         producer_config = {}
         generator_config = {}
+        protobuf_config = {}
 
         for key, value in config_data.items():
             if key.startswith("schema.registry."):
@@ -100,6 +135,8 @@ class AppConfig(BaseSettings):
                 kafka_config["security_protocol"] = value
             elif key.startswith("sasl."):
                 kafka_config[key.replace(".", "_")] = value
+            elif key == "protobuf":
+                protobuf_config = value
             else:
                 # Try to map to producer or generator config
                 if key in ["rate_per_second", "max_messages", "max_duration_seconds"]:
@@ -116,6 +153,7 @@ class AppConfig(BaseSettings):
             generator=GeneratorConfig(**generator_config)
             if generator_config
             else GeneratorConfig(),
+            protobuf=ProtobufConfig(**protobuf_config) if protobuf_config else ProtobufConfig(),
         )
 
     def to_confluent_config(self) -> dict[str, Any]:
@@ -186,3 +224,18 @@ class AppConfig(BaseSettings):
             config["ssl.key.location"] = self.schema_registry.ssl_key_location
 
         return config
+
+    def to_protobuf_config(self) -> dict[str, Any]:
+        """Convert to protobuf configuration format.
+
+        Returns:
+            Dictionary with protobuf configuration
+        """
+        return {
+            "schema_paths": self.protobuf.schema_paths,
+            "auto_compile": self.protobuf.auto_compile,
+            "temp_compilation": self.protobuf.temp_compilation,
+            "validate_dependencies": self.protobuf.validate_dependencies,
+            "protoc_path": self.protobuf.protoc_path,
+            "timeout": self.protobuf.timeout,
+        }

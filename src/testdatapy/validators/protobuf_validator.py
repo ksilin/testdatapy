@@ -355,6 +355,47 @@ def validate_protobuf_production(
                     print(f"  {subject}: ❌ {result['schema_type']} (expected PROTOBUF)")
 
 
+class ProtobufConfigValidator:
+    """Simple validator for protobuf configurations."""
+    
+    def validate_config_file(self, config_file: str) -> Dict[str, Any]:
+        """Validate a configuration file."""
+        import yaml
+        import json
+        from pathlib import Path
+        
+        try:
+            config_path = Path(config_file)
+            if not config_path.exists():
+                return {
+                    "issues": [{
+                        "severity": "error",
+                        "type": "file_not_found",
+                        "message": f"Configuration file not found: {config_file}"
+                    }]
+                }
+            
+            # Try to parse the file
+            with open(config_file, 'r') as f:
+                content = f.read()
+            
+            if config_file.endswith('.yaml') or config_file.endswith('.yml'):
+                yaml.safe_load(content)
+            elif config_file.endswith('.json'):
+                json.loads(content)
+            
+            return {"issues": []}
+            
+        except Exception as e:
+            return {
+                "issues": [{
+                    "severity": "error", 
+                    "type": "parse_error",
+                    "message": f"Failed to parse configuration: {str(e)}"
+                }]
+            }
+
+
 if __name__ == "__main__":
     # Example usage
     from testdatapy.schemas.protobuf import customer_pb2, order_pb2, payment_pb2
