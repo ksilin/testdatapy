@@ -96,9 +96,17 @@ class CorrelatedDataGenerator(DataGenerator):
         if id_field not in relationships and id_field not in derived_fields:
             record[id_field] = str(uuid.uuid4())
         
-        # Generate fields from relationships
+        # Generate fields from relationships and store mapped field values
+        mapped_field_values = {}
         for field_name, rel_config in relationships.items():
-            record[field_name] = self._generate_relationship_value(field_name, rel_config)
+            relationship_value = self._generate_relationship_value(field_name, rel_config)
+            record[field_name] = relationship_value
+            
+            # Handle mapped_field if specified and correlation exists
+            mapped_field_config = rel_config.get("mapped_field")
+            if mapped_field_config and relationship_value is not None:
+                mapped_values = self._apply_mapped_field(relationship_value, rel_config, mapped_field_config)
+                mapped_field_values.update(mapped_values)
         
         # Generate derived fields (these take precedence over auto-generation)
         # First pass: Generate key_only fields so they're available for template references
@@ -116,8 +124,14 @@ class CorrelatedDataGenerator(DataGenerator):
         
         # Second pass: Generate regular fields (which can now reference key_only fields)
         for field_name, field_config in regular_fields.items():
-            field_value = self._generate_derived_field(field_name, field_config, record)
-            record[field_name] = field_value
+            # Check if this field has a mapped value from relationships
+            if field_name in mapped_field_values:
+                # Use mapped value instead of generating
+                record[field_name] = mapped_field_values[field_name]
+            else:
+                # Generate normally
+                field_value = self._generate_derived_field(field_name, field_config, record)
+                record[field_name] = field_value
         
         # Third pass: Remove key_only fields from record and store separately
         for field_name in key_only_fields:
@@ -708,3 +722,72 @@ class CorrelatedDataGenerator(DataGenerator):
             ref_record = self.reference_pool._record_cache[ref_type][ref_id]
             return self._get_nested_field_value(ref_record, ref_field_path)
         return None
+    
+    def _apply_mapped_field(self, relationship_value: Any, rel_config: Dict[str, Any], mapped_field_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply mapped_field configuration to create derived field values from relationship.
+        
+        Args:
+            relationship_value: The value returned from the relationship (not null, correlation exists)
+            rel_config: The relationship configuration
+            mapped_field_config: The mapped_field configuration with source_field, target_field, mapping
+            
+        Returns:
+            Dictionary mapping target field names to their mapped values
+        """
+        mapped_values = {}
+        
+        # Get configuration
+        source_field = mapped_field_config.get("source_field")
+        target_field = mapped_field_config.get("target_field") 
+        mapping_name = mapped_field_config.get("mapping")
+        
+        if not all([source_field, target_field, mapping_name]):
+            return mapped_values
+        
+        # Get the mapping table from config
+        mappings = self.config.config.get("mappings", {})
+        mapping_table = mappings.get(mapping_name, {})
+        
+        if not mapping_table:
+            return mapped_values
+        
+        # Parse reference to get the referenced record
+        references = rel_config.get("references", "")
+        ref_parts = references.split(".")
+        if len(ref_parts) < 2:
+            return mapped_values
+            
+        ref_type = ref_parts[0]
+        
+        # Get a random referenced record ID to get the record for source field lookup
+        # In a correlation context, we need to find which record was actually referenced
+        # For now, we'll get the source field value from the relationship itself
+        
+        # Use O(1) index lookup instead of O(n) linear search
+        try:
+            if self.reference_pool.get_type_count(ref_type) > 0:
+                # Get the field path from the relationship reference
+                ref_field_path = ".".join(ref_parts[1:])
+                
+                # Use index to find the record ID that has our relationship_value (O(1) lookup!)
+                ref_id = self.reference_pool.find_by_field_value(ref_type, ref_field_path, str(relationship_value))
+                
+                if ref_id:
+                    # Get the actual record using the found ID
+                    if (hasattr(self.reference_pool, '_record_cache') and 
+                        ref_type in self.reference_pool._record_cache and
+                        ref_id in self.reference_pool._record_cache[ref_type]):
+                        
+                        ref_record = self.reference_pool._record_cache[ref_type][ref_id]
+                        
+                        # Get the source field value for mapping
+                        source_value = self._get_nested_field_value(ref_record, source_field)
+                        if source_value and str(source_value) in mapping_table:
+                            # Map the source value to target value
+                            mapped_values[target_field] = mapping_table[str(source_value)]
+                            
+        except Exception:
+            # If anything fails, just skip the mapping
+            pass
+            
+        return mapped_values

@@ -117,17 +117,17 @@ class TestKeyFieldFix:
         # Verify they are different (proving the fix matters)
         assert old_buggy_key_field != correct_key_field, "The fix should change the behavior"
     
-    def test_bmw_scenario_key_field_fix(self):
-        """Test the specific BMW scenario that required this fix."""
+    def test_scenario_key_field_fix(self):
+        """Test the specific scenario that required this fix."""
         
         config_dict = {
             "master_data": {
                 "appointments": {
                     "source": "faker",
                     "count": 3,
-                    "kafka_topic": "bmw_appointments",
-                    "id_field": "jobid",      # BMW uses jobid as primary identifier
-                    "key_field": "branchid",  # BMW wants branchid as message key for partitioning
+                    "kafka_topic": "appointments",
+                    "id_field": "jobid",      # uses jobid as primary identifier
+                    "key_field": "branchid",  # wants branchid as message key for partitioning
                     "schema": {
                         "jobid": {"type": "string", "format": "JOB_{seq:06d}"},
                         "branchid": {
@@ -149,7 +149,7 @@ class TestKeyFieldFix:
             producer=None
         )
         
-        # Load the BMW appointments
+        # Load the appointments
         master_gen.load_all()
         appointments = master_gen.get_loaded_data("appointments")
         
@@ -162,15 +162,15 @@ class TestKeyFieldFix:
             assert appointment["branchid"] in ["5fc36c95559ad6001f3998bb", "5ea4c09e4ade180021ff23bf", "5eb9438bf8eb9d002241ed34"]
         
         # The critical test: verify the correct key field is selected
-        bmw_key_field = master_gen.config.get_key_field("appointments", is_master=True)
-        assert bmw_key_field == "branchid", f"BMW should use 'branchid' as key, got '{bmw_key_field}'"
+        key_field = master_gen.config.get_key_field("appointments", is_master=True)
+        assert key_field == "branchid", f"should use 'branchid' as key, got '{key_field}'"
         
         # Verify this is different from the id_field 
-        bmw_id_field = correlation_config.get_master_config("appointments").get("id_field")
-        assert bmw_id_field == "jobid", "BMW id_field should be jobid"
-        assert bmw_key_field != bmw_id_field, "key_field should be different from id_field"
+        id_field = correlation_config.get_master_config("appointments").get("id_field")
+        assert id_field == "jobid", "id_field should be jobid"
+        assert key_field != id_field, "key_field should be different from id_field"
         
-        print(f"✅ BMW fix verified: id_field='{bmw_id_field}', key_field='{bmw_key_field}'")
+        print(f"✅ fix verified: id_field='{id_field}', key_field='{key_field}'")
     
     def test_backward_compatibility_preserved(self):
         """Test that existing configs without key_field still work the same way."""

@@ -10,6 +10,7 @@ from testdatapy.generators.base import DataGenerator
 from testdatapy.generators.reference_pool import ReferencePool
 from testdatapy.config.correlation_config import CorrelationConfig
 from testdatapy.producers.base import KafkaProducer
+from testdatapy.utils.data_flattening import DataFlattener
 
 
 class MasterDataGenerator:
@@ -101,7 +102,7 @@ class MasterDataGenerator:
             self.reference_pool.build_indices_for_entity(entity_type)
     
     def _load_from_csv(self, entity_type: str, entity_config: Dict[str, Any]) -> None:
-        """Load data from CSV file."""
+        """Load data from CSV file with enhanced structure reconstruction and type conversion."""
         file_path = entity_config.get("file")
         if not file_path:
             raise ValueError(f"CSV source requires 'file' parameter for {entity_type}")
@@ -110,13 +111,130 @@ class MasterDataGenerator:
         if not csv_path.exists():
             raise FileNotFoundError(f"CSV file not found: {file_path}")
         
-        data = []
+        # Load raw CSV data
+        raw_data = []
         with open(csv_path, 'r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                data.append(row)
+                raw_data.append(dict(row))  # Convert OrderedDict to regular dict
         
-        self.loaded_data[entity_type] = data
+        if not raw_data:
+            print(f"Warning: CSV file {file_path} is empty")
+            self.loaded_data[entity_type] = []
+            return
+        
+        # Detect if CSV data is flattened (contains dot-notation keys)
+        sample_row = raw_data[0]
+        has_flattened_keys = any('.' in key for key in sample_row.keys())
+        
+        if has_flattened_keys:
+            # Reconstruct nested structure from flattened CSV
+            print(f"📋 Reconstructing nested structure for {entity_type} from flattened CSV")
+            structured_data = []
+            for row in raw_data:
+                try:
+                    unflattened = DataFlattener.unflatten_dict(row)
+                    structured_data.append(unflattened)
+                except Exception as e:
+                    print(f"Warning: Failed to unflatten row in {entity_type}: {e}")
+                    # Fallback to flat structure
+                    structured_data.append(row)
+        else:
+            # CSV data is already flat/structured
+            structured_data = raw_data
+        
+        # Apply type conversions based on schema if available
+        schema = entity_config.get("schema", {})
+        if schema:
+            typed_data = []
+            for record in structured_data:
+                try:
+                    typed_record = self._apply_schema_types(record, schema)
+                    typed_data.append(typed_record)
+                except Exception as e:
+                    print(f"Warning: Failed to apply types to record in {entity_type}: {e}")
+                    # Fallback to original record
+                    typed_data.append(record)
+            
+            self.loaded_data[entity_type] = typed_data
+        else:
+            self.loaded_data[entity_type] = structured_data
+        
+        print(f"✅ Loaded {len(self.loaded_data[entity_type])} {entity_type} records from CSV")
+    
+    def _apply_schema_types(self, record: Dict[str, Any], schema: Dict[str, Any], path: str = "") -> Dict[str, Any]:
+        """Apply type conversions to a record based on schema definitions.
+        
+        Args:
+            record: Record to convert
+            schema: Schema with type definitions 
+            path: Current path for nested objects
+            
+        Returns:
+            Record with proper types applied
+        """
+        if not isinstance(record, dict) or not isinstance(schema, dict):
+            return record
+        
+        converted = {}
+        
+        for key, value in record.items():
+            current_path = f"{path}.{key}" if path else key
+            
+            # Find matching schema field (handles both nested and flat schemas)
+            field_schema = None
+            if key in schema:
+                field_schema = schema[key]
+            elif current_path in schema:
+                field_schema = schema[current_path]
+            
+            if field_schema and isinstance(field_schema, dict):
+                field_type = field_schema.get("type")
+                
+                if field_type and isinstance(value, str) and value:
+                    # Convert string values based on type
+                    try:
+                        if field_type == "integer":
+                            converted[key] = int(value)
+                        elif field_type == "float":
+                            converted[key] = float(value)
+                        elif field_type == "boolean":
+                            # Only convert known boolean values, otherwise keep as string
+                            lower_value = value.lower()
+                            if lower_value in ("true", "1", "yes", "on"):
+                                converted[key] = True
+                            elif lower_value in ("false", "0", "no", "off"):
+                                converted[key] = False
+                            else:
+                                raise ValueError(f"Invalid boolean value: {value}")
+                        elif field_type == "timestamp":
+                            # Handle various timestamp formats
+                            if value.isdigit():
+                                converted[key] = int(value)  # Unix timestamp
+                            else:
+                                converted[key] = value  # Keep as string for ISO format
+                        elif field_type == "timestamp_millis":
+                            converted[key] = int(value) if value.isdigit() else value
+                        else:
+                            converted[key] = value  # Keep as string for other types
+                    except (ValueError, TypeError) as e:
+                        print(f"Warning: Failed to convert {current_path} to {field_type}: {e}")
+                        converted[key] = value  # Keep original value
+                elif isinstance(value, dict):
+                    # Recursively convert nested objects
+                    if field_type == "object" and "properties" in field_schema:
+                        converted[key] = self._apply_schema_types(value, field_schema["properties"], current_path)
+                    else:
+                        converted[key] = self._apply_schema_types(value, schema, current_path)
+                else:
+                    converted[key] = value
+            elif isinstance(value, dict):
+                # Handle nested objects without explicit schema
+                converted[key] = self._apply_schema_types(value, schema, current_path)
+            else:
+                converted[key] = value
+        
+        return converted
     
     def _generate_with_faker(self, entity_type: str, entity_config: Dict[str, Any]) -> None:
         """Generate data using Faker."""
@@ -410,24 +528,49 @@ class MasterDataGenerator:
                 
                 if record_id:
                     self.reference_pool._record_cache[entity_type][str(record_id)] = record
+            
+            # Build indices for efficient correlation lookups
+            self._build_correlation_indices(entity_type, data, entity_config)
     
     def produce_all(self) -> None:
-        """Bulk produce all loaded master data to Kafka."""
-        if not self.producer:
-            raise ValueError("No producer configured for bulk loading")
-        
+        """Bulk produce all loaded master data to Kafka and export CSV files."""
         master_config = self.config.config.get("master_data", {})
+        kafka_errors = []
         
         for entity_type, entity_config in master_config.items():
-            # Produce master data if it has a kafka_topic configured
-            # bulk_load is now optional - default to True if kafka_topic is present
+            # Check if Kafka production is needed
             has_topic = entity_config.get("kafka_topic") is not None
             bulk_load = entity_config.get("bulk_load", has_topic)  # Default to True if topic is configured
             
+            # Produce to Kafka if enabled (with error handling)
             if bulk_load and has_topic:
-                self.produce_entity(entity_type, entity_config)
+                try:
+                    if not self.producer:
+                        raise ValueError(f"No producer configured for bulk loading entity '{entity_type}'")
+                    self.produce_entity(entity_type, entity_config)
+                except Exception as e:
+                    kafka_errors.append(f"Failed to produce {entity_type} to Kafka: {e}")
+            
+            # CSV export (always runs independent of Kafka production success/failure)
+            if "csv_export" in entity_config:
+                try:
+                    self._export_to_csv(entity_type, entity_config)
+                except Exception as e:
+                    print(f"Warning: Failed to export {entity_type} to CSV: {e}")
         
-        self.producer.flush()
+        # Flush producer only if we have one and used it successfully
+        if self.producer and not kafka_errors:
+            kafka_production_attempted = any(
+                entity_config.get("bulk_load", entity_config.get("kafka_topic") is not None) and 
+                entity_config.get("kafka_topic") is not None
+                for entity_config in master_config.values()
+            )
+            if kafka_production_attempted:
+                self.producer.flush()
+        
+        # Raise Kafka errors after CSV export is complete
+        if kafka_errors:
+            raise ValueError("; ".join(kafka_errors))
     
     def produce_entity(self, entity_type: str, entity_config: Dict[str, Any]) -> None:
         """Produce a single entity type to Kafka.
@@ -471,6 +614,8 @@ class MasterDataGenerator:
                 key=None,  # Let JsonProducer extract key from value using key_field
                 value=record
             )
+        
+        # CSV export is now handled in produce_all() method
     
     def get_loaded_data(self, entity_type: str) -> List[Dict[str, Any]]:
         """Get loaded data for a specific entity type."""
@@ -715,3 +860,172 @@ class MasterDataGenerator:
                 }
         
         return usage
+    
+    def _export_to_csv(self, entity_type: str, entity_config: Dict[str, Any]) -> None:
+        """Export loaded entity data to CSV file.
+        
+        Args:
+            entity_type: Type of entity to export
+            entity_config: Configuration for this entity including csv_export
+        """
+        csv_config = entity_config["csv_export"]
+        
+        # Parse CSV configuration
+        if isinstance(csv_config, str):
+            csv_file = csv_config
+            include_headers = True
+            flatten_objects = True
+            delimiter = ","
+        else:
+            csv_file = csv_config["file"]
+            include_headers = csv_config.get("include_headers", True)
+            flatten_objects = csv_config.get("flatten_objects", True)
+            delimiter = csv_config.get("delimiter", ",")
+        
+        # Get data to export
+        data = self.loaded_data.get(entity_type, [])
+        if not data:
+            return
+        
+        # Flatten objects if requested
+        if flatten_objects:
+            data = [self._flatten_record(record) for record in data]
+        
+        # Ensure parent directory exists
+        csv_path = Path(csv_file)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write CSV
+        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+            if data:
+                writer = csv.DictWriter(f, fieldnames=data[0].keys(), delimiter=delimiter)
+                if include_headers:
+                    writer.writeheader()
+                writer.writerows(data)
+        
+        print(f"✅ Exported {len(data)} {entity_type} records to {csv_file}")
+    
+    def _flatten_record(self, record: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+        """Flatten nested objects into dot-notation fields.
+        
+        Args:
+            record: Record with potentially nested objects
+            prefix: Current field prefix for nested fields
+            
+        Returns:
+            Flattened record with dot-notation field names
+        """
+        # Use the new DataFlattener utility for enhanced functionality
+        return DataFlattener.flatten_for_csv(record)
+    
+    def _flatten_record_legacy(self, record: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+        """Legacy flatten implementation for backward compatibility.
+        
+        Args:
+            record: Record with potentially nested objects
+            prefix: Current field prefix for nested fields
+            
+        Returns:
+            Flattened record with dot-notation field names
+        """
+        flattened = {}
+        
+        for key, value in record.items():
+            full_key = f"{prefix}.{key}" if prefix else key
+            
+            if isinstance(value, dict):
+                # Recursively flatten nested objects
+                flattened.update(self._flatten_record_legacy(value, full_key))
+            else:
+                # Convert non-dict values to appropriate CSV-safe format
+                if value is None:
+                    flattened[full_key] = ""
+                elif isinstance(value, bool):
+                    flattened[full_key] = "true" if value else "false"
+                else:
+                    flattened[full_key] = str(value)
+        
+        return flattened
+    
+    def _build_correlation_indices(self, entity_type: str, data: List[Dict[str, Any]], entity_config: Dict[str, Any]) -> None:
+        """Build indices for efficient correlation lookups.
+        
+        This method creates field indices for commonly used correlation fields to enable O(1) lookups
+        instead of O(n) linear searches, which is critical for performance at scale.
+        
+        Args:
+            entity_type: Type of entity (e.g., 'appointments')
+            data: List of loaded data records
+            entity_config: Configuration for this entity
+        """
+        if not data:
+            return
+            
+        # Get schema to understand field structure
+        schema = entity_config.get("schema", {})
+        
+        # Common correlation field paths that need indexing for performance
+        index_field_paths = [
+            "full.Vehicle.cLicenseNr",
+            "full.Vehicle.cLicenseNrCleaned", 
+            "full.Customer.cKeyCustomer",
+            "full.Job.cKeyJob",
+            "jobid",
+            "id"
+        ]
+        
+        # Also check for any reference fields in the config that might be used for correlation
+        # by scanning the entire configuration for references to this entity
+        try:
+            config_str = str(self.config.config)
+            if f"{entity_type}." in config_str:
+                # Extract potential field paths from references
+                import re
+                ref_patterns = re.findall(rf'{entity_type}\.([a-zA-Z0-9_.]+)', config_str)
+                for pattern in ref_patterns:
+                    if pattern not in index_field_paths:
+                        index_field_paths.append(pattern)
+        except Exception:
+            # If pattern extraction fails, just use the common paths
+            pass
+        
+        # Build indices for each field path
+        indexed_count = 0
+        for record in data:
+            # Get the record ID for indexing
+            id_field = entity_config.get("id_field", "id")
+            record_id = record.get(id_field)
+            if not record_id:
+                continue
+                
+            # Index each field path
+            for field_path in index_field_paths:
+                field_value = self._get_nested_field_value(record, field_path)
+                if field_value is not None:
+                    # Add to reference pool index for O(1) lookup
+                    self.reference_pool.add_field_index(entity_type, field_path, str(record_id), str(field_value))
+                    indexed_count += 1
+        
+        if indexed_count > 0:
+            print(f"🔍 Built {indexed_count} correlation indices for {entity_type} across {len(index_field_paths)} field paths")
+    
+    def _get_nested_field_value(self, record: Dict[str, Any], field_path: str) -> Any:
+        """Get value from nested field path like 'full.Vehicle.cLicenseNr'.
+        
+        Args:
+            record: Record to traverse
+            field_path: Dot-notation field path
+            
+        Returns:
+            Field value or None if not found
+        """
+        parts = field_path.split(".")
+        current = record
+        
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        
+        return current

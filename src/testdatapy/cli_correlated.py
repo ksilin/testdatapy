@@ -677,11 +677,11 @@ def validate(config_file):
 @click.option('--config', '-c', required=True, help='Path to correlation config YAML file')
 @click.option('--output-dir', '-o', default='./benchmark_results', help='Output directory for benchmark results')
 @click.option('--scale-factors', default='1000,5000,10000', help='Comma-separated scale factors for testing')
-@click.option('--test-name', default='BMW_Benchmark', help='Name for the benchmark test')
+@click.option('--test-name', default='Benchmark', help='Name for the benchmark test')
 def benchmark(config, output_dir, scale_factors, test_name):
-    """Run comprehensive BMW performance benchmarks."""
+    """Run comprehensive performance benchmarks."""
     
-    click.echo("🚀 Starting BMW Performance Benchmark Suite...")
+    click.echo("🚀 Starting Performance Benchmark Suite...")
     
     try:
         # Parse scale factors
@@ -712,9 +712,9 @@ def benchmark(config, output_dir, scale_factors, test_name):
 @click.option('--entity-type', '-e', help='Specific entity type to analyze')
 @click.option('--sample-size', default=1000, help='Sample size for correlation analysis')
 def analyze_correlation(config, entity_type, sample_size):
-    """Analyze correlation patterns in BMW scenario data."""
+    """Analyze correlation patterns in scenario data."""
     
-    click.echo("🔍 Analyzing BMW correlation patterns...")
+    click.echo("🔍 Analyzing correlation patterns...")
     
     try:
         # Load configuration
@@ -760,11 +760,11 @@ def analyze_correlation(config, entity_type, sample_size):
                 correlation_ratio = correlation_count / total_count
                 click.echo(f"  Correlation ratio: {correlation_ratio:.3f} ({correlation_count}/{total_count})")
                 
-                # BMW requirement check
+                # requirement check
                 target = 0.25
                 deviation = abs(correlation_ratio - target)
                 if deviation <= 0.05:
-                    click.echo(f"  ✅ BMW requirement met (±5% tolerance)")
+                    click.echo(f"  ✅ requirement met (±5% tolerance)")
                 else:
                     click.echo(f"  ⚠️  Deviation from target: {deviation:.3f}")
             else:

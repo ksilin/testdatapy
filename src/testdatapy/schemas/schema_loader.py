@@ -28,7 +28,7 @@ class DynamicSchemaLoader:
         Dynamically load a protobuf class from module in specified path.
         
         Args:
-            module_name: Name of the protobuf module (e.g., "bmw_spp_events_pb2")
+            module_name: Name of the protobuf module (e.g., "events_pb2")
             class_name: Name of the protobuf class (e.g., "VehicleStayCud")
             schema_path: Optional path to directory containing protobuf modules
             

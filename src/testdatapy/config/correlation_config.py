@@ -5,6 +5,8 @@ import os
 import warnings
 from pathlib import Path
 
+from .validation import validate_and_warn, ConfigurationError
+
 
 class ValidationError(Exception):
     """Raised when configuration validation fails."""
@@ -20,17 +22,26 @@ class CorrelationConfig:
     - Generation rules and constraints
     """
     
-    def __init__(self, config_dict: Dict[str, Any]):
+    def __init__(self, config_dict: Dict[str, Any], validate: bool = True):
         """Initialize with a configuration dictionary.
         
         Args:
             config_dict: Dictionary containing the configuration
+            validate: Whether to run enhanced validation (default: True)
             
         Raises:
             ValidationError: If configuration is invalid
+            ConfigurationError: If enhanced validation fails
         """
         self.config = config_dict
         self._validate()
+        
+        # Run enhanced validation for new features
+        if validate:
+            try:
+                validate_and_warn(self.config)
+            except ConfigurationError as e:
+                raise ValidationError(f"Configuration validation failed: {e}")
     
     @classmethod
     def from_yaml_file(cls, file_path: str) -> 'CorrelationConfig':
@@ -79,15 +90,27 @@ class CorrelationConfig:
     
     def _validate_master_data(self, name: str, config: Dict[str, Any]) -> None:
         """Validate master data configuration."""
-        required_fields = ["kafka_topic"]
+        # kafka_topic is required unless bulk_load is explicitly false (reference-only entities)
+        bulk_load = config.get("bulk_load", True)  # Default to True
+        has_kafka_topic = "kafka_topic" in config
         
-        for field in required_fields:
-            if field not in config:
-                raise ValidationError(f"Master data '{name}' missing required field: {field}")
+        if not has_kafka_topic and bulk_load:
+            raise ValidationError(
+                f"Master data '{name}' missing required field 'kafka_topic' when bulk_load is enabled. "
+                f"Set bulk_load: false for reference-only entities without Kafka production."
+            )
+        
+        if has_kafka_topic and bulk_load is False:
+            # Allow kafka_topic with bulk_load: false (load but don't produce)
+            pass
         
         # Validate source-specific requirements
         if config.get("source") == "csv" and "file" not in config:
             raise ValidationError(f"Master data '{name}' with CSV source must specify 'file'")
+        
+        # Validate CSV export configuration if present
+        if "csv_export" in config:
+            self._validate_csv_export_config(name, config["csv_export"])
         
         # Validate protobuf configuration if present
         self._validate_protobuf_config(name, config)
@@ -255,6 +278,57 @@ class CorrelationConfig:
             raise ValidationError(
                 f"Entity '{name}' 'schema_path' is not readable: {resolved_path}"
             )
+    
+    def _validate_csv_export_config(self, entity_name: str, csv_config: Any) -> None:
+        """Validate CSV export configuration.
+        
+        Args:
+            entity_name: Name of the entity for error messages
+            csv_config: CSV export configuration (string or dict)
+            
+        Raises:
+            ValidationError: If CSV export configuration is invalid
+        """
+        if isinstance(csv_config, str):
+            # Simple file path - validate it's a valid path
+            try:
+                file_path = Path(csv_config)
+                # Create parent directory to validate path structure
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+            except (OSError, RuntimeError) as e:
+                raise ValidationError(
+                    f"CSV export for '{entity_name}' has invalid file path '{csv_config}': {e}"
+                )
+        elif isinstance(csv_config, dict):
+            # Complex configuration - validate required fields
+            if "file" not in csv_config:
+                raise ValidationError(f"CSV export for '{entity_name}' must specify 'file'")
+            
+            # Validate file path
+            try:
+                file_path = Path(csv_config["file"])
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+            except (OSError, RuntimeError) as e:
+                raise ValidationError(
+                    f"CSV export for '{entity_name}' has invalid file path '{csv_config['file']}': {e}"
+                )
+            
+            # Validate optional boolean fields
+            for bool_field in ["include_headers", "flatten_objects"]:
+                if bool_field in csv_config and not isinstance(csv_config[bool_field], bool):
+                    raise ValidationError(
+                        f"CSV export for '{entity_name}' field '{bool_field}' must be boolean"
+                    )
+            
+            # Validate delimiter if specified
+            if "delimiter" in csv_config:
+                if not isinstance(csv_config["delimiter"], str) or len(csv_config["delimiter"]) != 1:
+                    raise ValidationError(
+                        f"CSV export for '{entity_name}' delimiter must be a single character"
+                    )
+        else:
+            raise ValidationError(f"Invalid csv_export configuration for '{entity_name}': must be string or dict")
+    
     def has_master_type(self, type_name: str) -> bool:
         """Check if a master data type exists."""
         return type_name in self.config.get("master_data", {})

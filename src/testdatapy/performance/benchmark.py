@@ -268,7 +268,6 @@ class VehicleBenchmarkSuite:
             for record in generator.generate():
                 results["total_records"] += 1
                 
-                # Check for BMW correlation pattern
                 if record.get("appointment_plate") is not None:
                     results["correlation_count"] += 1
                 else:
@@ -296,9 +295,9 @@ class VehicleBenchmarkSuite:
             scaled_config = self._create_scaled_config(config_file, scale_factor)
             
             # Run benchmark
-            metrics = self.benchmark_bmw_scenario(
+            metrics = self.benchmark_scenario(
                 config_file=scaled_config,
-                test_name=f"BMW_Scale_{scale_factor}",
+                test_name=f"Scale_{scale_factor}",
                 enable_monitoring=True
             )
             
@@ -324,10 +323,10 @@ class VehicleBenchmarkSuite:
         # Scale transactional data counts
         for entity_config in config.get("transactional_data", {}).values():
             if "max_messages" in entity_config:
-                entity_config["max_messages"] = scale_factor * 2  # BMW 2:1 ratio
+                entity_config["max_messages"] = scale_factor * 2 
         
         # Write scaled config to temporary file
-        temp_config_file = f"/tmp/bmw_scaled_{scale_factor}.yaml"
+        temp_config_file = f"/tmp/scaled_{scale_factor}.yaml"
         with open(temp_config_file, 'w') as f:
             yaml.dump(config, f)
         
@@ -382,7 +381,7 @@ class VehicleBenchmarkSuite:
                     "correlation_std_dev": self._calculate_std_dev(all_correlations),
                 }
             },
-            "bmw_requirements_validation": self.validate_bmw_requirements(latest_result),
+            "requirements_validation": self.validate_requirements(latest_result),
             "detailed_results": [
                 {
                     "test_name": r.test_name,
@@ -422,13 +421,13 @@ class VehicleBenchmarkSuite:
         
         if metrics.records_per_second < 1000:
             recommendations.append(
-                f"Throughput ({metrics.records_per_second:.0f} rps) below BMW requirement (1000 rps). "
+                f"Throughput ({metrics.records_per_second:.0f} rps) below requirement (1000 rps). "
                 "Consider optimizing reference pool operations or reducing field complexity."
             )
         
         if abs(metrics.correlation_ratio - 0.25) > 0.05:
             recommendations.append(
-                f"Correlation ratio ({metrics.correlation_ratio:.3f}) deviates from BMW requirement (0.25). "
+                f"Correlation ratio ({metrics.correlation_ratio:.3f}) deviates from requirement (0.25). "
                 "Check percentage-based correlation implementation."
             )
         
@@ -445,7 +444,7 @@ class VehicleBenchmarkSuite:
             )
         
         if not recommendations:
-            recommendations.append("Performance meets all BMW requirements. System is optimized.")
+            recommendations.append("Performance meets all requirements. System is optimized.")
         
         return recommendations
 
@@ -457,13 +456,13 @@ def run_vehicle_benchmark_suite(config_file: str, output_dir: str = "./benchmark
     
     benchmark_suite = VehicleBenchmarkSuite()
     
-    print("🚀 Starting BMW Performance Benchmark Suite...")
+    print("🚀 Starting Performance Benchmark Suite...")
     
-    # Run main BMW scenario benchmark
-    print("📊 Running BMW scenario benchmark...")
-    main_metrics = benchmark_suite.benchmark_bmw_scenario(
+    # Run main scenario benchmark
+    print("📊 Running scenario benchmark...")
+    main_metrics = benchmark_suite.benchmark_scenario(
         config_file=config_file,
-        test_name="BMW_Main_Scenario"
+        test_name="Main_Scenario"
     )
     
     # Run scaling benchmarks
@@ -476,11 +475,11 @@ def run_vehicle_benchmark_suite(config_file: str, output_dir: str = "./benchmark
     # Generate comprehensive report
     print("📋 Generating performance report...")
     report = benchmark_suite.generate_performance_report(
-        output_file=f"{output_dir}/bmw_performance_report.json"
+        output_file=f"{output_dir}/performance_report.json"
     )
     
     # Print summary
-    print("\n✅ BMW Benchmark Suite Complete!")
+    print("\n✅ Benchmark Suite Complete!")
     print(f"📊 Results saved to: {output_dir}/")
     print(f"🚀 Latest Throughput: {main_metrics.records_per_second:.0f} records/sec")
     print(f"🎯 Correlation Ratio: {main_metrics.correlation_ratio:.3f} (target: 0.25)")
@@ -488,11 +487,11 @@ def run_vehicle_benchmark_suite(config_file: str, output_dir: str = "./benchmark
     print(f"⏱️  Total Duration: {main_metrics.duration_seconds:.1f} seconds")
     
     # Validation summary
-    validation = benchmark_suite.validate_bmw_requirements(main_metrics)
+    validation = benchmark_suite.validate_requirements(main_metrics)
     if validation["overall_pass"]:
-        print("✅ All BMW requirements PASSED!")
+        print("✅ All requirements PASSED!")
     else:
-        print("❌ Some BMW requirements FAILED. Check detailed report.")
+        print("❌ Some requirements FAILED. Check detailed report.")
 
 
 if __name__ == "__main__":
@@ -501,6 +500,6 @@ if __name__ == "__main__":
     
     if len(sys.argv) > 1:
         config_file = sys.argv[1]
-        run_bmw_benchmark_suite(config_file)
+        run_benchmark_suite(config_file)
     else:
-        print("Usage: python benchmark.py <bmw_config.yaml>")
+        print("Usage: python benchmark.py <config.yaml>")

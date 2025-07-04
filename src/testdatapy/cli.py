@@ -808,6 +808,10 @@ cli.add_command(cache)
 from testdatapy.cli_batch import batch
 cli.add_command(batch)
 
+# Add topics management commands
+from testdatapy.cli_topics import topics
+cli.add_command(topics)
+
 
 def main():
     """Main entry point."""

@@ -75,7 +75,7 @@ class TestCorrelationConfigProtobuf(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = self.base_config.copy()
             config["transactional_data"]["orders"].update({
-                "protobuf_module": "bmw_events_pb2",
+                "protobuf_module": "events_pb2",
                 "protobuf_class": "VehicleStayCud",
                 "schema_path": temp_dir
             })
@@ -92,9 +92,9 @@ class TestCorrelationConfigProtobuf(unittest.TestCase):
         """Test protobuf configuration with proto file path."""
         config = self.base_config.copy()
         config["transactional_data"]["orders"].update({
-            "protobuf_module": "bmw_events_pb2",
+            "protobuf_module": "events_pb2",
             "protobuf_class": "VehicleStayCud",
-            "proto_file_path": "bmw-events.proto"
+            "proto_file_path": "events.proto"
         })
         
         # Should not raise exception (we don't validate proto file exists)
@@ -103,7 +103,7 @@ class TestCorrelationConfigProtobuf(unittest.TestCase):
         # Test getter methods
         protobuf_config = correlation_config.get_protobuf_config("orders", is_master=False)
         self.assertIn("proto_file_path", protobuf_config)
-        self.assertEqual(protobuf_config["proto_file_path"], "bmw-events.proto")
+        self.assertEqual(protobuf_config["proto_file_path"], "events.proto")
     
     def test_missing_protobuf_class(self):
         """Test validation error when protobuf_module is specified without protobuf_class."""
@@ -240,13 +240,13 @@ master_data:
     kafka_topic: "test-vehicles"
     source: "faker"
     count: 50
-    protobuf_module: "bmw_objects_pb2"
+    protobuf_module: "objects_pb2"
     protobuf_class: "Trackable"
 
 transactional_data:
   vehiclestays:
     kafka_topic: "test-vehiclestays"
-    protobuf_module: "bmw_events_pb2"
+    protobuf_module: "events_pb2"
     protobuf_class: "VehicleStayCud"
     relationships:
       vehicle_alias:
@@ -264,12 +264,12 @@ transactional_data:
                 # Verify protobuf config was loaded correctly
                 vehicles_config = correlation_config.get_protobuf_config("vehicles", is_master=True)
                 self.assertIsNotNone(vehicles_config)
-                self.assertEqual(vehicles_config["protobuf_module"], "bmw_objects_pb2")
+                self.assertEqual(vehicles_config["protobuf_module"], "objects_pb2")
                 self.assertEqual(vehicles_config["protobuf_class"], "Trackable")
                 
                 stays_config = correlation_config.get_protobuf_config("vehiclestays", is_master=False)
                 self.assertIsNotNone(stays_config)
-                self.assertEqual(stays_config["protobuf_module"], "bmw_events_pb2")
+                self.assertEqual(stays_config["protobuf_module"], "events_pb2")
                 self.assertEqual(stays_config["protobuf_class"], "VehicleStayCud")
                 
             finally:
